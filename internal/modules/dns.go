@@ -196,7 +196,7 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	// 4. Zone transfer attempt (real AXFR)
 	for _, ns := range result.Nameservers {
 		log.Debug("Attempting AXFR zone transfer from %s", ns)
-		records := realZoneTransfer(domain, ns, cfg.Timeout)
+		records := realZoneTransfer(domain, ns, cfg.Timeout, cfg)
 		if len(records) > 0 {
 			result.ZoneTransfer = records
 			log.Warn("Zone transfer SUCCESSFUL from %s — %d records", ns, len(records))

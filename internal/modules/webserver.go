@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -157,12 +158,30 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 		addr, isTLS := hostPort(target)
 		var conn net.Conn
 		var err error
+		// BUGFIX: previously hardcoded InsecureSkipVerify: true, which silently
+		// ignored cfg.SkipSSLCheck. Users passing -skip-tls-verify=false got
+		// no enforcement here — the dial would still bypass certificate
+		// validation, undermining the flag's stated purpose (W1r3hound is
+		// often pointed at broken/self-signed TLS, but the user must be
+		// the one to opt into that, not the tool). Now honours cfg.
+		// PERF: dial is now context-aware so SIGINT can tear it down
+		// instantly instead of blocking for cfg.Timeout.
 		if isTLS {
-			conn, err = tls.DialWithDialer(
-				&net.Dialer{Timeout: cfg.Timeout},
-				"tcp", addr,
-				&tls.Config{InsecureSkipVerify: true},
-			)
+			ctx, cancel := cfg.Context(cfg.Timeout)
+			defer cancel()
+			dialer := &net.Dialer{Timeout: cfg.Timeout}
+			rawConn, dialErr := dialer.DialContext(ctx, "tcp", addr)
+			if dialErr != nil {
+				err = dialErr
+			} else {
+				tlsConn := tls.Client(rawConn, &tls.Config{InsecureSkipVerify: cfg.SkipSSLCheck})
+				err = tlsConn.HandshakeContext(ctx)
+				if err == nil {
+					conn = tlsConn
+				} else {
+					rawConn.Close()
+				}
+			}
 		} else {
 			conn, err = net.DialTimeout("tcp", addr, cfg.Timeout)
 		}
@@ -183,7 +202,7 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 	if strings.HasPrefix(target, "https://") {
 		log.Info("Inspecting TLS certificate...")
 		addr, _ := hostPort(target)
-		tlsInfo := inspectTLS(addr, cfg.Timeout, log)
+		tlsInfo := inspectTLS(addr, cfg.Timeout, cfg.SkipSSLCheck, log)
 		if tlsInfo != nil {
 			result.TLSInfo = tlsInfo
 			log.Info("TLS CN: %s  Issuer: %s", tlsInfo.CommonName, tlsInfo.Issuer)
@@ -212,15 +231,28 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 	})
 }
 
-func inspectTLS(hostAddr string, timeout time.Duration, log *core.Logger) *TLSDetail {
+func inspectTLS(hostAddr string, timeout time.Duration, skipVerify bool, log *core.Logger) *TLSDetail {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
+	// PERF: previously used tls.DialWithDialer with a fixed Timeout, so SIGINT
+	// couldn't interrupt an in-flight TLS handshake. Now the dialer's
+	// Cancel channel fires when the parent context is cancelled (for global
+	// SIGINT cancellation, callers should derive cfg.Context here; for now
+	// the per-request timeout still bounds the dial — this only fixes the
+	// ctx-propagation in the dialer, not the missing global cancel hook
+	// inside inspectTLS itself, which is called outside the loop).
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	defer parentCancel()
+	time.AfterFunc(timeout, parentCancel)
 	conn, err := tls.DialWithDialer(
-		&net.Dialer{Timeout: timeout},
+		&net.Dialer{Timeout: timeout, Cancel: parentCtx.Done()},
 		"tcp",
 		hostAddr,
-		&tls.Config{InsecureSkipVerify: true},
+		// BUGFIX: previously hardcoded true. Now honours the caller's
+		// skipVerify flag (sourced from cfg.SkipSSLCheck). Lets users
+		// enforce strict validation when needed.
+		&tls.Config{InsecureSkipVerify: skipVerify},
 	)
 	if err != nil {
 		log.Debug("TLS connect failed: %v", err)

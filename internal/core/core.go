@@ -36,6 +36,14 @@ type Config struct {
 	Passive      bool         // passive-only mode (no active probing)
 	RL           *RateLimiter // rate limiter shared across modules
 
+	// Cancel is the root context cancellation function. Modules that perform
+	// raw net.Dial/tls.Dial (outside the shared HTTP client) should derive a
+	// context from this so SIGINT can interrupt an in-flight dial rather than
+	// blocking for the full OS timeout. Lazy-initialised; the Cancel func is
+	// safe to call multiple times (idempotent).
+	Cancel    context.CancelFunc
+	cancelCtx context.Context
+
 	Resolver      *net.Resolver // DNS resolver (system default, or custom via -resolver)
 	WaybackLimit  int           // max URLs from the Wayback CDX API
 	CrawlMaxPages int           // max pages for the crawler
@@ -112,6 +120,7 @@ func (c *Config) AddSharedParams(params []string) {
 }
 
 func DefaultConfig() *Config {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Config{
 		Concurrency:   20,
 		Timeout:       10 * time.Second,
@@ -126,7 +135,22 @@ func DefaultConfig() *Config {
 		WaybackLimit:  5000,
 		CrawlMaxPages: 100,
 		MaxJSFiles:    50,
+		cancelCtx:     ctx,
+		Cancel:        cancel,
 	}
+}
+
+// Context returns a child context derived from the root cancel context, with
+// the per-request timeout layered on top. Modules should pass this to
+// DialContext-style APIs so SIGINT (which triggers cfg.Cancel()) tears down
+// in-flight dials immediately instead of waiting for the OS-level timeout.
+// Safe to call before DefaultConfig has run — falls back to context.Background()
+// with the per-request timeout so tests don't have to wire the full config.
+func (c *Config) Context(timeout time.Duration) (context.Context, context.CancelFunc) {
+	if c == nil || c.cancelCtx == nil {
+		return context.WithTimeout(context.Background(), timeout)
+	}
+	return context.WithTimeout(c.cancelCtx, timeout)
 }
 
 // NewResolver returns a *net.Resolver. When server is non-empty (e.g. "1.1.1.1"

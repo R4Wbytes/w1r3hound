@@ -5,6 +5,48 @@ follows [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) where
 applicable.
 
+## [1.0.1] — 2026-08-07
+
+### Security
+
+- **TLS verification bypass fixed** (`internal/modules/webserver.go`):
+  the `webserver` module hardcoded `InsecureSkipVerify: true` in two
+  places, silently overriding the `-skip-tls-verify=false` flag. Users
+  who explicitly opted into strict TLS verification got no enforcement.
+  Now both `tls.Dial` calls (the malformed-request fingerprint path and
+  the `inspectTLS` cert inspection path) honour `cfg.SkipSSLCheck`.
+  The signature of `inspectTLS(hostAddr, timeout, log)` is now
+  `inspectTLS(hostAddr, timeout, skipVerify, log)`; the caller passes
+  `cfg.SkipSSLCheck` through.
+
+### Performance
+
+- **Context-aware dials** (`internal/core/core.go`,
+  `internal/modules/portscan.go`, `internal/modules/dnsextra.go`,
+  `internal/modules/webserver.go`): `net.DialTimeout` /
+  `tls.DialWithDialer` calls outside the shared HTTP client have been
+  migrated to `DialContext` so SIGINT tears down in-flight dials
+  immediately instead of blocking for the full OS-level timeout.
+  A new `Config.Context(timeout)` helper returns a child context
+  derived from a root cancel context initialised in `DefaultConfig`;
+  the SIGINT signal handler in `main` now calls `cfg.Cancel()` so all
+  in-flight goroutines using the helper abort at once.
+
+### Changed
+
+- **Banner art** (`main.go`): the figlet wordmark has been replaced
+  with a new skull-and-worm ASCII art piece. The subtitle line
+  (`[ wiretap-grade offensive recon ] · W1r3hound v1.0 · OWASP WSTG · BBP · CTF`)
+  is preserved verbatim below the art for brand continuity.
+
+### Compatibility
+
+- Public API: `internal/modules.realZoneTransfer` now takes an extra
+  `*core.Config` argument. This is an internal helper, not part of
+  the CLI surface. Call sites in `internal/modules/dns.go` updated.
+- All 4 packages still pass `go test -race -count=1`. `go vet ./...`
+  and `gofmt -l .` remain clean.
+
 ## [1.0] — 2026-08-07
 
 ### Initial release

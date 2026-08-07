@@ -155,8 +155,12 @@ func RunPortScan(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			// net.JoinHostPort (not Sprintf) so an IPv6 target is bracketed
 			// correctly — "%s:%d" on a bare IPv6 literal produces an address
 			// net.Dial can't parse (go vet flags this).
+			// PERF: ctx-aware so SIGINT tears down all in-flight port dials
+			// instead of blocking for dialTimeout.
 			addr := net.JoinHostPort(ip, strconv.Itoa(p))
-			conn, err := net.DialTimeout("tcp", addr, dialTimeout)
+			ctx, cancel := cfg.Context(dialTimeout)
+			conn, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp", addr)
+			cancel()
 			if err != nil {
 				return
 			}

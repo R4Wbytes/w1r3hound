@@ -21,11 +21,23 @@ import (
 
 // realZoneTransfer attempts an AXFR against a nameserver and returns
 // any hostnames extracted from the response. Best-effort DNS wire parsing.
-func realZoneTransfer(domain, ns string, timeout time.Duration) []string {
+// cfg may be nil (test path / no-config callers); when present, the dial is
+// context-aware so SIGINT can interrupt an in-flight connect.
+func realZoneTransfer(domain, ns string, timeout time.Duration, cfg *core.Config) []string {
 	ns = strings.TrimSuffix(ns, ".")
 	addr := net.JoinHostPort(ns, "53")
 
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+	// PERF: ctx-aware dial so SIGINT can interrupt an in-flight TCP/53 connect
+	// during a zone transfer (otherwise it blocks for the full OS timeout).
+	var conn net.Conn
+	var err error
+	if cfg != nil {
+		ctx, cancel := cfg.Context(timeout)
+		defer cancel()
+		conn, err = (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", addr)
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, timeout)
+	}
 	if err != nil {
 		return nil
 	}
