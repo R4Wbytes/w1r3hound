@@ -213,15 +213,24 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			}
 		}
 
-		// Check for source map references
+		// Check for source map references (FIX #2: verify HTTP 200 + body shape
+		// before adding, to avoid reporting source maps that are referenced in
+		// a JS file but actually return 404 — a known source of false positives
+		// on catch-all / SPA servers and CMS themes that include sourceMappingURL
+		// comments for debugging even though the .map file is not deployed.)
 		smMatches := sourceMapPattern.FindAllStringSubmatch(jsBody, -1)
 		for _, sm := range smMatches {
 			smURL := resolveURL(jsURL, cleanSourceMapURL(sm[1]))
-			if issameDomain(smURL, cfg.Domain) {
-				result.SourceMaps = append(result.SourceMaps, smURL)
-				log.Warn("Source map found: %s", smURL)
-			} else {
+			if !issameDomain(smURL, cfg.Domain) {
 				log.Debug("Third-party source map (ignored): %s", smURL)
+				continue
+			}
+			smBody, smStatus, _ := core.FetchBodyRL(client, smURL, cfg.UserAgent, cfg.RL)
+			if smStatus == 200 && looksLikeSourceMap(smBody) {
+				result.SourceMaps = append(result.SourceMaps, smURL)
+				log.Warn("Source map accessible: %s", smURL)
+			} else {
+				log.Debug("Source map referenced but not accessible (status %d): %s", smStatus, smURL)
 			}
 		}
 	}

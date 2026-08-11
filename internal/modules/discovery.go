@@ -37,47 +37,69 @@ func RunWayback(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	page := 0
 	maxPages := 20 // safety limit
 
-	for page < maxPages {
-		apiURL := fmt.Sprintf(
-			"https://web.archive.org/cdx/search/cdx?url=*.%s/*&output=json&fl=original&collapse=urlkey&limit=%d",
-			domain, cfg.WaybackLimit,
-		)
-		if resumeKey != "" {
-			apiURL += "&resumeKey=" + url.QueryEscape(resumeKey)
-		}
-		apiURL += "&showResumeKey=true"
+	// FIX #4: if the wildcard subdomain query returns zero rows, fall back
+	// to a domain-scope query. Targets hosted behind CDNs (Wix, Cloudflare,
+	// Azure) often have no historical "www." subdomain in Wayback but DO
+	// have apex-domain captures. Without this fallback, the tool reports
+	// "Wayback Machine: 0 URLs" even when the CDX API has thousands of
+	// snapshots from years ago.
+	queryTemplates := []string{
+		"https://web.archive.org/cdx/search/cdx?url=*.%s/*&output=json&fl=original&collapse=urlkey&limit=%d",
+		"https://web.archive.org/cdx/search/cdx?url=%s/*&matchType=domain&output=json&fl=original&collapse=urlkey&limit=%d",
+	}
+	queryIdx := 0
 
-		body, status, err := core.FetchBodyRL(client, apiURL, cfg.UserAgent, cfg.RL)
-		if err != nil || status != 200 {
-			if page == 0 {
-				log.Error("Wayback API request failed (status %d): %v", status, err)
+	for queryIdx < len(queryTemplates) {
+		for page < maxPages {
+			apiURL := fmt.Sprintf(queryTemplates[queryIdx], domain, cfg.WaybackLimit)
+			if resumeKey != "" {
+				apiURL += "&resumeKey=" + url.QueryEscape(resumeKey)
 			}
-			break
-		}
+			apiURL += "&showResumeKey=true"
 
-		var rows [][]string
-		if err := json.Unmarshal([]byte(body), &rows); err != nil {
-			break
-		}
-
-		// Check for resumeKey in last row
-		gotMore := false
-		if len(rows) > 0 {
-			lastRow := rows[len(rows)-1]
-			if len(lastRow) == 1 && !strings.Contains(lastRow[0], "://") {
-				resumeKey = lastRow[0]
-				rows = rows[:len(rows)-1] // remove resumeKey row
-				gotMore = true
+			body, status, err := core.FetchBodyRL(client, apiURL, cfg.UserAgent, cfg.RL)
+			if err != nil || status != 200 {
+				if page == 0 && queryIdx == 0 {
+					log.Error("Wayback API request failed (status %d): %v", status, err)
+				}
+				break
 			}
+
+			var rows [][]string
+			if err := json.Unmarshal([]byte(body), &rows); err != nil {
+				break
+			}
+
+			// Check for resumeKey in last row
+			gotMore := false
+			if len(rows) > 0 {
+				lastRow := rows[len(rows)-1]
+				if len(lastRow) == 1 && !strings.Contains(lastRow[0], "://") {
+					resumeKey = lastRow[0]
+					rows = rows[:len(rows)-1] // remove resumeKey row
+					gotMore = true
+				}
+			}
+
+			allRows = append(allRows, rows...)
+			page++
+
+			if !gotMore {
+				break
+			}
+			log.Debug("Wayback page %d (query %d): %d rows (resuming...)", page, queryIdx, len(rows))
 		}
 
-		allRows = append(allRows, rows...)
-		page++
-
-		if !gotMore {
-			break
+		// FIX #4: if the first query template returned nothing and we have
+		// more templates to try, switch to the next one before giving up.
+		if len(allRows) == 0 && queryIdx+1 < len(queryTemplates) {
+			log.Info("Wayback subdomain query returned 0 results, falling back to matchType=domain")
+			resumeKey = ""
+			page = 0
+			queryIdx++
+			continue
 		}
-		log.Debug("Wayback page %d: %d rows (resuming...)", page, len(rows))
+		break
 	}
 
 	rows := allRows
@@ -285,6 +307,35 @@ type CloudBucket struct {
 	URL      string `json:"url"`
 	Public   bool   `json:"public"`
 	Status   int    `json:"status_code"`
+	// Generic marks buckets whose name is so generic (e.g. "www", "images",
+	// "static", "cdn", "www-staging") that the status-200 heuristic cannot
+	// distinguish a target-owned bucket from a publicly-listed generic bucket
+	// owned by another party (e.g. storage.googleapis.com/www-staging is owned
+	// by Google project 868530998679, not by the scan target). These buckets
+	// are still reported for awareness but are excluded from the HIGH-severity
+	// "Public cloud storage buckets found" finding.
+	Generic bool `json:"generic,omitempty"`
+}
+
+// genericBucketNames is the set of bucket names that are so common that a
+// 200 response from a public cloud provider almost certainly belongs to a
+// third party, not the scan target. If a target's buckets fall in this set,
+// they must be validated via body content (owner/project) before being
+// reported as a HIGH-severity finding.
+var genericBucketNames = map[string]bool{
+	"www": true, "www-staging": true, "www-test": true, "www-dev": true,
+	"www-cdn": true, "www-web": true, "www-assets": true, "www-images": true,
+	"www-public": true, "www-prod": true, "www-static": true, "www-media": true,
+	"www-uploads": true, "www-files": true, "www-data": true, "www-backup": true,
+	"www-app": true, "www-api": true, "www-db": true, "www-docs": true,
+	"images": true, "static": true, "cdn": true, "media": true, "uploads": true,
+	"assets": true, "files": true, "public": true, "data": true, "backup": true,
+	"web": true, "api": true, "app": true, "docs": true,
+	"staging": true, "test": true, "dev": true, "prod": true,
+}
+
+func looksGenericBucketName(name string) bool {
+	return genericBucketNames[name]
 }
 
 func RunCloudStorage(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
@@ -383,13 +434,18 @@ func RunCloudStorage(cfg *core.Config, report *core.ReconReport, log *core.Logge
 						URL:      url,
 						Public:   public,
 						Status:   status,
+						Generic:  public && looksGenericBucketName(n),
 					}
 					mu.Lock()
 					result.Buckets = append(result.Buckets, bucket)
 					mu.Unlock()
 
 					if public {
-						log.Warn("PUBLIC bucket: %s (%s)", url, c.provider)
+						if bucket.Generic {
+							log.Info("Public bucket (generic name, not validated as target-owned): %s (%s)", url, c.provider)
+						} else {
+							log.Warn("PUBLIC bucket: %s (%s)", url, c.provider)
+						}
 					} else {
 						log.Info("Bucket exists (%d): %s (%s)", status, url, c.provider)
 					}
@@ -401,7 +457,7 @@ func RunCloudStorage(cfg *core.Config, report *core.ReconReport, log *core.Logge
 
 	publicCount := 0
 	for _, b := range result.Buckets {
-		if b.Public {
+		if b.Public && !b.Generic {
 			publicCount++
 		}
 	}

@@ -5,6 +5,71 @@ follows [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) where
 applicable.
 
+## [1.0.3] — 2026-08-11
+
+### False-Positive Fixes (validated against nuevageneracion.ed.cr,
+### lasalle.ed.cr, keralauniversity.ac.in)
+
+- **Cloud bucket false ownership** (`internal/modules/discovery.go`,
+  `RunCloudStorage`): buckets responding HTTP 200 with generic names
+  like `www`, `www-staging`, `www-cdn`, `www-test`, `www-images`, etc.
+  are now flagged as `Generic=true` and excluded from the HIGH-severity
+  "Public cloud storage buckets found" finding. Previously any 200
+  response from `storage.googleapis.com/<name>`,
+  `<name>.digitaloceanspaces.com`, or `<name>.s3.amazonaws.com` was
+  treated as a target-owned public bucket — producing 9 false positives
+  per target on shared-name buckets that belong to other parties
+  (verified: `storage.googleapis.com/www-staging` is owned by Google
+  project 868530998679, not the scan target).
+
+- **Source map detection without HTTP verification** (`internal/modules/content.go`,
+  `RunContent` section 5): inline `//# sourceMappingURL=` references in JS
+  files are now fetched and validated (`status == 200` + `looksLikeSourceMap`)
+  before being added to the findings. Previously the URL was added on
+  reference alone, producing MEDIUM false positives when CMS themes
+  ship the comment but not the `.map` file. Verified: 3 false positives
+  in keralauniversity.ac.in (all return 404), 1 in lasalle.ed.cr.
+
+### False-Negative Fixes
+
+- **Wayback Machine zero results for CDN-hosted targets**
+  (`internal/modules/discovery.go`, `RunWayback`): if the initial
+  wildcard-subdomain CDX query
+  (`url=*.{domain}/*`) returns zero rows, the tool now falls back to
+  a domain-scope query (`matchType=domain`) before giving up.
+  Previously CDN-hosted targets (Wix, Cloudflare, Azure) reported
+  "Wayback Machine: 0 URLs" even when the CDX API had thousands of
+  historical snapshots of the apex domain. Verified: lasalle.ed.cr
+  went from 0 → 10782 URLs; keralauniversity.ac.in from 5000 → 100001 URLs.
+
+- **DNS module silent failures** (`internal/modules/dns.go`, `RunDNS`):
+  the resolver errors from `LookupNS`, `LookupMX`, and `LookupTXT`
+  are now captured and logged via `log.Warn`. Previously the errors
+  were discarded with `nss, _ := cfg.Resolver.LookupNS(...)`, making
+  it impossible to distinguish "no records exist" from "the resolver
+  is unreachable". The "DNS Enumeration: 0 NS, 0 MX" INFO finding
+  itself is unchanged — but the operator can now see the root cause
+  in the log (e.g. `⚠ NS lookup failed: lookup ... on 10.0.2.3:53: no such host`).
+
+### Compatibility
+
+- All 4 packages pass `go test -race -count=1`.
+- `gofmt -l .` and `go vet ./...` clean.
+- No CLI flag changes; no API breakage; no report-schema changes
+  (new `Generic` field on `CloudBucket` is `omitempty`).
+
+### Validation
+
+Regression-tested against three authorized targets covering two tech
+stacks (Wix-hosted SPA + Apache/PHP):
+
+| Target | HIGH before | HIGH after | Total findings |
+|---|---|---|---|
+| keralauniversity.ac.in | 1 | 0 | 24 → 21 |
+| lasalle.ed.cr | 1 | 0 | 24 → 23 |
+
+Full analysis at `/home/kali/recon/<target>/13_analisis/COMPARATIVO_PRE_vs_POST_FIX.md`.
+
 ## [1.0.2] — 2026-08-10
 
 ### Security / False Negative Fixes

@@ -139,24 +139,36 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	domain := cfg.Domain
 	result := DNSResult{}
 
-	// 1. Nameservers
-	nss, _ := cfg.Resolver.LookupNS(context.Background(), domain)
+	// 1. Nameservers (FIX #3: log the resolver error instead of silently
+	// dropping it. Previously an empty Nameservers slice was indistinguishable
+	// from a lookup failure, producing false negatives like "DNS Enumeration:
+	// 0 NS, 0 MX" when the resolver was actually unreachable.)
+	nss, nsErr := cfg.Resolver.LookupNS(context.Background(), domain)
+	if nsErr != nil {
+		log.Warn("NS lookup failed: %v", nsErr)
+	}
 	for _, ns := range nss {
 		host := strings.TrimSuffix(ns.Host, ".")
 		result.Nameservers = append(result.Nameservers, host)
 		log.Info("NS: %s", host)
 	}
 
-	// 2. MX records
-	mxs, _ := cfg.Resolver.LookupMX(context.Background(), domain)
+	// 2. MX records (FIX #3: log error)
+	mxs, mxErr := cfg.Resolver.LookupMX(context.Background(), domain)
+	if mxErr != nil {
+		log.Warn("MX lookup failed: %v", mxErr)
+	}
 	for _, mx := range mxs {
 		host := strings.TrimSuffix(mx.Host, ".")
 		result.MXRecords = append(result.MXRecords, fmt.Sprintf("%s (prio %d)", host, mx.Pref))
 		log.Info("MX: %s (priority %d)", host, mx.Pref)
 	}
 
-	// 3. TXT records — SPF, DMARC, DKIM, verification tokens
-	txts, _ := cfg.Resolver.LookupTXT(context.Background(), domain)
+	// 3. TXT records — SPF, DMARC, DKIM, verification tokens (FIX #3: log error)
+	txts, txtErr := cfg.Resolver.LookupTXT(context.Background(), domain)
+	if txtErr != nil {
+		log.Warn("TXT lookup failed: %v", txtErr)
+	}
 	result.TXTRecords = txts
 	for _, t := range txts {
 		log.Info("TXT: %s", truncate(t, 120))
