@@ -1,4 +1,4 @@
-# W1r3hound — wiretap-grade offensive recon
+# w1r3hound — wiretap-grade offensive recon
 
 ```
 ██╗    ██╗ ██╗██████╗ ███████╗██╗  ██╗ ██████╗ ██╗   ██╗███╗   ██╗██████╗
@@ -10,12 +10,12 @@
 
    [ wiretap-grade offensive recon ]
    ─────────────────────────────────────
-   W1r3hound v1.0 · OWASP WSTG · BBP · CTF
+   w1r3hound v1.0.2 · OWASP WSTG · BBP · CTF
 ```
 
 > *"Listen long enough on the wire, and the target tells you everything it never meant to."*
 
-**W1r3hound** is a single-binary offensive reconnaissance framework for
+**w1r3hound** is a single-binary offensive reconnaissance framework for
 bug bounty hunting, penetration testing, and CTF competitions. The name
 is a play on *wire* (a wiretap, a digital listening post) + *hound* (a
 tracker with predator instinct): a surveillance system that picks up a
@@ -28,6 +28,33 @@ enumeration, and HTTP-signature subdomain takeover fingerprinting.
 Zero dependencies. Single binary. Cross-platform. One scan to profile
 everything.
 
+## What's new in v1.0.2
+
+v1.0.2 closes several false-negative and false-positive gaps found during
+a post-1.0.1 audit against real-world targets:
+
+- **CSP directive analysis** (`sentry`): flags `unsafe-inline`, `unsafe-eval`,
+  wildcard `*` in script-src, missing `default-src`, and `data:` in script-src.
+- **Cookie SameSite=None without Secure** (`sentry`): new finding.
+- **HSTS max-age under 1 year** (`sentry`): flags values below 31536000.
+- **OIDC/OAuth dangerous grants** (`metadata`): parses `openid-configuration`
+  and flags `password` / `implicit` grant types.
+- **Fingerprint-aware path probing** (`metadata`): PingFederate, WordPress,
+  and Azure auth endpoint probes.
+- **Wayback CDX pagination**: uses `resumeKey` for full coverage instead of
+  truncating at 5,000 URLs.
+- **10 new takeover fingerprints**: Beanstalk, Azure CDN, Azure Front Door,
+  Desk.com, Campaign Monitor, Intercom, Fly.io, SmartJobBoard, Strikingly,
+  HatenaBlog (37 services total).
+- **RDAP JSON parsing** (`recon`): registrar + dates + nameservers populated.
+- **Crawler parallelised**: concurrent worker pool, ~8× faster on 100 pages.
+- **Tighter secret regexes**: Twilio / Mailgun / Bearer / Basic Auth now
+  require context and minimum token length (fewer false positives).
+- **DMARC apex for compound TLDs** (`.co.uk`, `.com.br`).
+- **AXFR read loop capped** at 10 MB; **DNS compression pointer** parsing fixed.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list.
+
 ## Installation
 
 ```bash
@@ -39,31 +66,31 @@ go build -o w1r3hound .
 ### Cross-compile
 
 ```bash
-GOOS=linux   GOARCH=amd64 go build -o W1r3hound-linux .
-GOOS=darwin  GOARCH=arm64 go build -o W1r3hound-mac .
-GOOS=windows GOARCH=amd64 go build -o W1r3hound.exe .
+GOOS=linux   GOARCH=amd64 go build -o w1r3hound-linux .
+GOOS=darwin  GOARCH=arm64 go build -o w1r3hound-mac .
+GOOS=windows GOARCH=amd64 go build -o w1r3hound.exe .
 ```
 
 ## Usage
 
 ```bash
 # Profile everything
-W1r3hound -t example.com
+w1r3hound -t example.com
 
 # Save the breach report
-W1r3hound -t example.com -o breach_report
+w1r3hound -t example.com -o breach_report
 
 # Passive signals only — no active probing
-W1r3hound -t example.com -passive
+w1r3hound -t example.com -passive
 
 # Select specific protocols
-W1r3hound -t example.com -m fingerprinter,sentry,deepdive
+w1r3hound -t example.com -m fingerprinter,sentry,deepdive
 
 # Aggressive CTF scan
-W1r3hound -t 10.10.10.100 -p full -c 100 -v
+w1r3hound -t 10.10.10.100 -p full -c 100 -v
 
 # Bug bounty with custom subdomain list
-W1r3hound -t target.com -w /path/to/subdomains.txt -o bb_report
+w1r3hound -t target.com -w /path/to/subdomains.txt -o bb_report
 ```
 
 ### Options
@@ -132,7 +159,7 @@ command line.
 | Alias | Internal | What it does | WSTG |
 |-------|----------|-------------|------|
 | `jsdeep` | jsdeep | JS endpoint extraction (LinkFinder style) | INFO-05 |
-| `takeover` | takeover | Subdomain takeover via HTTP fingerprints (28 services) | CONF-10 |
+| `takeover` | takeover | Subdomain takeover via HTTP fingerprints (37 services) | CONF-10 |
 
 ### Beyond WSTG
 
@@ -145,7 +172,7 @@ command line.
 - **API doc discovery** — Swagger/OpenAPI/Postman across 20+ paths
 - **SaaS enumeration** — 30 third-party platforms outside the security review cycle
 - **JS endpoint extraction** — LinkFinder-style with cloud URL & secret detection
-- **HTTP-signature takeover** — 28 service fingerprints (beyond NXDOMAIN-only)
+- **HTTP-signature takeover** — 37 service fingerprints (beyond NXDOMAIN-only)
 - **Subdomain permutation** — dev/staging/prod variations with wildcard filtering
 - **Data feedback pipeline** — modules feed subdomains/JS/endpoints to each other
 - **30+ secret patterns** — AWS keys, Stripe, GitHub tokens, JWT, DB strings
@@ -157,9 +184,9 @@ command line.
 
 ## Output
 
-**JSON** (`W1r3hound_target_timestamp.json`) — machine-readable, pipeline-friendly, every finding with raw data.
+**JSON** (`w1r3hound_target_timestamp.json`) — machine-readable, pipeline-friendly, every finding with raw data.
 
-**Markdown** (`W1r3hound_target_timestamp.md`) — human-readable breach report grouped by severity with WSTG IDs.
+**Markdown** (`w1r3hound_target_timestamp.md`) — human-readable breach report grouped by severity with WSTG IDs.
 
 ### Severity Scale
 
@@ -176,29 +203,29 @@ command line.
 ### Bug Bounty
 
 ```bash
-W1r3hound -t target.com -w subdomains-top1million.txt -o loot
-W1r3hound -t target.com -m fingerprinter,archaeology,recon -passive   # passive first
-W1r3hound -t target.com -m deepdive,sentry,bruteforce                   # then active
+w1r3hound -t target.com -w subdomains-top1million.txt -o loot
+w1r3hound -t target.com -m fingerprinter,archaeology,recon -passive   # passive first
+w1r3hound -t target.com -m deepdive,sentry,bruteforce                   # then active
 ```
 
 ### Pentest
 
 ```bash
-W1r3hound -t client.com -p full -c 50 -v -o pentest_recon
-W1r3hound -t 192.168.1.0/24 -m portscan,probescan -p 1-65535
+w1r3hound -t client.com -p full -c 50 -v -o pentest_recon
+w1r3hound -t 192.168.1.0/24 -m portscan,probescan -p 1-65535
 ```
 
 ### CTF
 
 ```bash
-W1r3hound -t 10.10.10.100 -p full -c 100 -v
-W1r3hound -t http://challenge.ctf:31337 -m probescan,deepdive,bruteforce,crawler
+w1r3hound -t 10.10.10.100 -p full -c 100 -v
+w1r3hound -t http://challenge.ctf:31337 -m probescan,deepdive,bruteforce,crawler
 ```
 
 ## Architecture
 
 ```
-W1r3hound/
+w1r3hound/
 ├── main.go                          # CLI, protocol router, banner
 ├── go.mod                           # module github.com/w1r3hound/w1r3hound
 ├── internal/
@@ -230,8 +257,8 @@ W1r3hound/
 - Only the root target is actively fingerprinted/secret-scanned; discovered
   subdomains are probed for liveness but not deep-scanned.
 - The crawler doesn't preserve query parameters from `<a href>` links.
-- No deduplication across multiple `W1r3hound` runs against the same target
-  (each run produces its own `W1r3hound_target_timestamp.{json,md}` pair).
+- No deduplication across multiple `w1r3hound` runs against the same target
+  (each run produces its own `w1r3hound_target_timestamp.{json,md}` pair).
 
 ## Legal
 

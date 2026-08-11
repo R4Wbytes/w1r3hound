@@ -49,16 +49,16 @@ var secretPatterns = []struct {
 	{"Stripe Secret Key", regexp.MustCompile(`sk_live_[0-9a-zA-Z]{24,99}`)},
 	{"Stripe Publishable Key", regexp.MustCompile(`pk_live_[0-9a-zA-Z]{24,99}`)},
 	{"Square Access Token", regexp.MustCompile(`sq0atp-[0-9A-Za-z_-]{22}`)},
-	{"Twilio API Key", regexp.MustCompile(`SK[0-9a-fA-F]{32}`)},
-	{"Mailgun API Key", regexp.MustCompile(`key-[0-9a-zA-Z]{32}`)},
+	{"Twilio API Key", regexp.MustCompile(`(?i)(?:twilio|account_?sid|api_?key|api_?secret)\s*[:=]\s*['"]?SK[0-9a-fA-F]{32}`)},
+	{"Mailgun API Key", regexp.MustCompile(`(?i)(?:mailgun|mg_?api)\s*[:=]\s*['"]?key-[0-9a-zA-Z]{32}`)},
 	{"SendGrid API Key", regexp.MustCompile(`SG\.[0-9A-Za-z_-]{22}\.[0-9A-Za-z_-]{43}`)},
 	{"Heroku API Key", regexp.MustCompile(`(?i)heroku[a-z0-9_ .,:]+[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}`)},
 	{"Firebase URL", regexp.MustCompile(`https://[a-z0-9-]+\.firebaseio\.com`)},
 	{"Firebase API Key", regexp.MustCompile(`(?i)firebase[a-z0-9_ .,:]*['"][A-Za-z0-9_-]{39}['"]`)},
 	{"JWT Token", regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`)},
 	{"Private Key", regexp.MustCompile(`-----BEGIN (RSA |EC |DSA )?PRIVATE KEY-----`)},
-	{"Basic Auth", regexp.MustCompile(`(?i)(basic\s+)[A-Za-z0-9+/=]{20,}`)},
-	{"Bearer Token", regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9_\-.~+/]+=*`)},
+	{"Basic Auth", regexp.MustCompile(`(?i)(?:authorization|auth)\s*[:=]\s*['"]?basic\s+[A-Za-z0-9+/=]{20,}`)},
+	{"Bearer Token", regexp.MustCompile(`(?i)(?:authorization|auth|token)\s*[:=]\s*['"]?bearer\s+[A-Za-z0-9_\-.~+/]{20,}=*`)},
 	{"Password in URL", regexp.MustCompile(`(?i)(?:https?|ftp|ssh|mongodb\+srv)://[a-zA-Z0-9._-]{1,40}:([^@\s'"<>]{3,40})@[a-zA-Z0-9.-]+`)},
 	{"DB Connection String", regexp.MustCompile(`(?i)(mongodb|postgres|mysql|redis|mssql|jdbc)://[^\s'"<>]{10,200}`)},
 	{"Generic API Key", regexp.MustCompile(`(?i)(api[_-]?key|apikey|api[_-]?secret)\s*[:=]\s*['"]?([A-Za-z0-9_-]{16,64})['"]?`)},
@@ -117,6 +117,7 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	result := ContentResult{
 		MetaTags: make(map[string]string),
 	}
+	emailSeen := make(map[string]bool)
 
 	// Fetch main page
 	body, status, err := core.FetchBodyRL(client, target, cfg.UserAgent, cfg.RL)
@@ -202,6 +203,16 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		}
 		scanForSecrets(&result, jsBody, jsURL, log)
 
+		// Extract emails from JS files (FN-11)
+		jsEmails := emailPattern.FindAllString(jsBody, -1)
+		for _, e := range jsEmails {
+			lower := strings.ToLower(e)
+			if !emailSeen[lower] && !strings.HasSuffix(lower, ".png") && !strings.HasSuffix(lower, ".jpg") {
+				emailSeen[lower] = true
+				result.Emails = append(result.Emails, lower)
+			}
+		}
+
 		// Check for source map references
 		smMatches := sourceMapPattern.FindAllStringSubmatch(jsBody, -1)
 		for _, sm := range smMatches {
@@ -281,7 +292,6 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 	// ── 8. Emails ──
 	emailMatches := emailPattern.FindAllString(body, -1)
-	emailSeen := make(map[string]bool)
 	for _, e := range emailMatches {
 		lower := strings.ToLower(e)
 		if !emailSeen[lower] && !strings.HasSuffix(lower, ".png") && !strings.HasSuffix(lower, ".jpg") {

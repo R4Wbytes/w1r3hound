@@ -202,7 +202,7 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 	if strings.HasPrefix(target, "https://") {
 		log.Info("Inspecting TLS certificate...")
 		addr, _ := hostPort(target)
-		tlsInfo := inspectTLS(addr, cfg.Timeout, cfg.SkipSSLCheck, log)
+		tlsInfo := inspectTLS(addr, cfg.Timeout, cfg.SkipSSLCheck, cfg, log)
 		if tlsInfo != nil {
 			result.TLSInfo = tlsInfo
 			log.Info("TLS CN: %s  Issuer: %s", tlsInfo.CommonName, tlsInfo.Issuer)
@@ -231,7 +231,7 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 	})
 }
 
-func inspectTLS(hostAddr string, timeout time.Duration, skipVerify bool, log *core.Logger) *TLSDetail {
+func inspectTLS(hostAddr string, timeout time.Duration, skipVerify bool, cfg *core.Config, log *core.Logger) *TLSDetail {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
@@ -242,9 +242,14 @@ func inspectTLS(hostAddr string, timeout time.Duration, skipVerify bool, log *co
 	// the per-request timeout still bounds the dial — this only fixes the
 	// ctx-propagation in the dialer, not the missing global cancel hook
 	// inside inspectTLS itself, which is called outside the loop).
-	parentCtx, parentCancel := context.WithCancel(context.Background())
+	var parentCtx context.Context
+	var parentCancel context.CancelFunc
+	if cfg != nil {
+		parentCtx, parentCancel = cfg.Context(timeout)
+	} else {
+		parentCtx, parentCancel = context.WithTimeout(context.Background(), timeout)
+	}
 	defer parentCancel()
-	time.AfterFunc(timeout, parentCancel)
 	conn, err := tls.DialWithDialer(
 		&net.Dialer{Timeout: timeout, Cancel: parentCtx.Done()},
 		"tcp",

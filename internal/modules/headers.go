@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/w1r3hound/w1r3hound/internal/core"
@@ -155,6 +156,96 @@ func RunHeaders(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		})
 	}
 
+	// CSP content analysis — flag dangerous directives even when the header is present
+	cspVal := resp.Header.Get("Content-Security-Policy")
+	if cspVal != "" {
+		directives := make(map[string]string)
+		for _, part := range strings.Split(cspVal, ";") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			fields := strings.SplitN(part, " ", 2)
+			key := strings.ToLower(fields[0])
+			val := ""
+			if len(fields) > 1 {
+				val = fields[1]
+			}
+			directives[key] = val
+		}
+
+		// Check for unsafe-inline in script-src or default-src
+		for _, dir := range []string{"script-src", "default-src"} {
+			if v, ok := directives[dir]; ok && strings.Contains(v, "'unsafe-inline'") {
+				log.Warn("CSP %s contains 'unsafe-inline'", dir)
+				report.Add(core.Finding{
+					Module:      "headers",
+					WSTG:        "WSTG-CONF-07",
+					Title:       fmt.Sprintf("CSP %s contains 'unsafe-inline'", dir),
+					Severity:    core.SevMedium,
+					Description: "'unsafe-inline' in CSP allows inline scripts, significantly weakening XSS protection.",
+				})
+			}
+		}
+
+		// Check for unsafe-eval in script-src or default-src
+		for _, dir := range []string{"script-src", "default-src"} {
+			if v, ok := directives[dir]; ok && strings.Contains(v, "'unsafe-eval'") {
+				log.Warn("CSP %s contains 'unsafe-eval'", dir)
+				report.Add(core.Finding{
+					Module:      "headers",
+					WSTG:        "WSTG-CONF-07",
+					Title:       fmt.Sprintf("CSP %s contains 'unsafe-eval'", dir),
+					Severity:    core.SevMedium,
+					Description: "'unsafe-eval' in CSP allows eval() and similar dynamic code execution.",
+				})
+			}
+		}
+
+		// Check for wildcard * in default-src, script-src, or object-src
+		for _, dir := range []string{"default-src", "script-src", "object-src"} {
+			if v, ok := directives[dir]; ok {
+				for _, token := range strings.Fields(v) {
+					if token == "*" {
+						log.Warn("CSP %s contains wildcard '*'", dir)
+						report.Add(core.Finding{
+							Module:      "headers",
+							WSTG:        "WSTG-CONF-07",
+							Title:       fmt.Sprintf("CSP %s contains wildcard '*'", dir),
+							Severity:    core.SevLow,
+							Description: "Wildcard '*' in CSP allows loading resources from any origin.",
+						})
+						break
+					}
+				}
+			}
+		}
+
+		// Check for missing default-src
+		if _, ok := directives["default-src"]; !ok {
+			log.Warn("CSP missing default-src directive")
+			report.Add(core.Finding{
+				Module:      "headers",
+				WSTG:        "WSTG-CONF-07",
+				Title:       "CSP missing default-src directive",
+				Severity:    core.SevLow,
+				Description: "Without default-src, unlisted fetch directives have no fallback policy.",
+			})
+		}
+
+		// Check for data: in script-src
+		if v, ok := directives["script-src"]; ok && strings.Contains(v, "data:") {
+			log.Warn("CSP script-src contains 'data:' URI scheme")
+			report.Add(core.Finding{
+				Module:      "headers",
+				WSTG:        "WSTG-CONF-07",
+				Title:       "CSP script-src contains 'data:' URI scheme",
+				Severity:    core.SevLow,
+				Description: "Allowing data: URIs in script-src can be used to bypass CSP via encoded scripts.",
+			})
+		}
+	}
+
 	// HSTS specifics
 	hsts := resp.Header.Get("Strict-Transport-Security")
 	if hsts != "" {
@@ -164,28 +255,51 @@ func RunHeaders(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		if !strings.Contains(hsts, "preload") {
 			log.Debug("HSTS preload not set")
 		}
+		// Check max-age value
+		for _, part := range strings.Split(hsts, ";") {
+			part = strings.TrimSpace(part)
+			if strings.HasPrefix(strings.ToLower(part), "max-age") {
+				kv := strings.SplitN(part, "=", 2)
+				if len(kv) == 2 {
+					if maxAge, err := strconv.Atoi(strings.TrimSpace(kv[1])); err == nil && maxAge < 31536000 {
+						log.Warn("HSTS max-age=%d is below recommended minimum of 31536000", maxAge)
+						report.Add(core.Finding{
+							Module:      "headers",
+							WSTG:        "WSTG-CONF-07",
+							Title:       fmt.Sprintf("HSTS max-age=%d below recommended minimum", maxAge),
+							Severity:    core.SevLow,
+							Description: "HSTS max-age is below the recommended minimum of 1 year (31536000 seconds) required for HSTS preload.",
+						})
+					}
+				}
+				break
+			}
+		}
 	}
 
 	// ── 2. Technology Detection via Headers ──
 	techHeaders := map[string]string{
-		"X-Powered-By":           "",
-		"X-Generator":            "",
-		"X-AspNet-Version":       "ASP.NET",
-		"X-AspNetMvc-Version":    "ASP.NET MVC",
-		"X-Drupal-Cache":         "Drupal",
-		"X-Drupal-Dynamic-Cache": "Drupal",
-		"X-Varnish":              "Varnish Cache",
-		"X-Pingback":             "WordPress (XML-RPC)",
-		"X-Litespeed-Cache":      "LiteSpeed",
-		"X-Turbo-Charged-By":     "LiteSpeed",
-		"X-Mod-Pagespeed":        "Google mod_pagespeed",
-		"X-Page-Speed":           "Google PageSpeed",
-		"Via":                    "",
-		"X-Cache":                "",
-		"X-Cache-Status":         "",
-		"X-Served-By":            "",
-		"X-Backend-Server":       "",
-		"X-CDN":                  "",
+		"X-Powered-By":                   "",
+		"X-Generator":                    "",
+		"X-AspNet-Version":               "ASP.NET",
+		"X-AspNetMvc-Version":            "ASP.NET MVC",
+		"X-Drupal-Cache":                 "Drupal",
+		"X-Drupal-Dynamic-Cache":         "Drupal",
+		"X-Varnish":                      "Varnish Cache",
+		"X-Pingback":                     "WordPress (XML-RPC)",
+		"X-Litespeed-Cache":              "LiteSpeed",
+		"X-Turbo-Charged-By":             "LiteSpeed",
+		"X-Mod-Pagespeed":                "Google mod_pagespeed",
+		"X-Page-Speed":                   "Google PageSpeed",
+		"Via":                            "",
+		"X-Cache":                        "",
+		"X-Cache-Status":                 "",
+		"X-Served-By":                    "",
+		"X-Backend-Server":               "",
+		"X-CDN":                          "",
+		"X-Envoy-Upstream-Service-Time":  "Envoy Proxy",
+		"X-Envoy-Decorator-Operation":    "Envoy Proxy",
+		"X-Kubernetes-Pf-Flowschema-Uid": "Kubernetes",
 	}
 	for h, defaultName := range techHeaders {
 		val := resp.Header.Get(h)
@@ -312,6 +426,16 @@ func RunHeaders(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 				Title:       fmt.Sprintf("Session cookie '%s' missing HttpOnly", cookie.Name),
 				Severity:    core.SevMedium,
 				Description: "Session cookies without HttpOnly are vulnerable to XSS-based session hijacking.",
+			})
+		}
+		if cookie.SameSite == http.SameSiteNoneMode && !cookie.Secure {
+			log.Warn("Cookie '%s' has SameSite=None without Secure flag", cookie.Name)
+			report.Add(core.Finding{
+				Module:      "headers",
+				WSTG:        "WSTG-SESS-02",
+				Title:       fmt.Sprintf("Cookie '%s' SameSite=None without Secure flag", cookie.Name),
+				Severity:    core.SevMedium,
+				Description: "SameSite=None without Secure flag is rejected by modern browsers and may indicate misconfiguration.",
 			})
 		}
 	}

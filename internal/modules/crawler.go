@@ -1,10 +1,12 @@
 package modules
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/w1r3hound/w1r3hound/internal/core"
 )
@@ -83,101 +85,114 @@ func RunCrawler(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	// Seed the queue with the target and common paths found elsewhere
 	queue = append(queue, target+"/", target+"/robots.txt", target+"/sitemap.xml")
 
-	for len(queue) > 0 && len(visited) < maxPages {
-		currentURL := queue[0]
-		queue = queue[1:]
+	var (
+		queueMu sync.Mutex
+		visitMu sync.Mutex
+		wg      sync.WaitGroup
+		sem     = make(chan struct{}, cfg.Concurrency)
+	)
 
-		// Normalize: strip trailing slashes for dedup but keep for requests
+	processURL := func(currentURL string) {
+		defer wg.Done()
+		defer func() { <-sem }()
+		defer core.RecoverWorker(log, "crawler")
+
 		cleanURL := strings.TrimRight(currentURL, "/")
-		if visited[cleanURL] || visited[currentURL] {
-			continue
+		visitMu.Lock()
+		if visited[cleanURL] || visited[currentURL] || len(visited) >= maxPages {
+			visitMu.Unlock()
+			return
 		}
 		visited[cleanURL] = true
 		visited[currentURL] = true
+		visitMu.Unlock()
 
 		body, status, err := core.FetchBodyRL(client, currentURL, cfg.UserAgent, cfg.RL)
 		if err != nil || status >= 400 || len(body) == 0 {
-			continue
+			return
 		}
 
-		// Page info
 		page := CrawledPage{URL: currentURL, StatusCode: status}
 		if m := titlePattern.FindStringSubmatch(body); len(m) > 1 {
 			page.Title = strings.TrimSpace(m[1])
 		}
-		result.Pages = append(result.Pages, page)
 
-		// Extract parameters from URL
+		visitMu.Lock()
+		result.Pages = append(result.Pages, page)
+		visitMu.Unlock()
+
 		if parsedURL, err := url.Parse(currentURL); err == nil {
+			visitMu.Lock()
 			for param := range parsedURL.Query() {
 				if !paramSet[param] {
 					paramSet[param] = true
 					result.Parameters = append(result.Parameters, param)
 				}
 			}
+			visitMu.Unlock()
 		}
 
-		// Extract links
 		links := linkPattern.FindAllStringSubmatch(body, -1)
+		var newURLs []string
 		for _, lm := range links {
 			href := strings.TrimSpace(lm[1])
 			if href == "" || strings.HasPrefix(href, "javascript:") || strings.HasPrefix(href, "mailto:") {
 				continue
 			}
-
 			resolved := resolveURL(currentURL, href)
 			resolvedParsed, err := url.Parse(resolved)
 			if err != nil {
 				continue
 			}
-
-			// Same host?
 			if resolvedParsed.Host == baseURL.Host {
 				clean := resolvedParsed.Scheme + "://" + resolvedParsed.Host + resolvedParsed.Path
-				if !visited[clean] && !visited[resolved] {
-					queue = append(queue, clean)
+				visitMu.Lock()
+				shouldAdd := !visited[clean] && !visited[resolved]
+				visitMu.Unlock()
+				if shouldAdd {
+					newURLs = append(newURLs, clean)
 				}
 			} else if resolvedParsed.Host != "" {
+				visitMu.Lock()
 				extLinks[resolved] = true
+				visitMu.Unlock()
 			}
 		}
 
-		// Extract forms
 		forms := formPattern.FindAllStringSubmatch(body, -1)
 		for _, fm := range forms {
 			formAttrs := fm[1]
 			formBody := fm[2]
-
 			fe := FormEntry{Page: currentURL, Method: "GET"}
-
 			if am := actionPattern.FindStringSubmatch(formAttrs); len(am) > 1 {
 				fe.Action = resolveURL(currentURL, am[1])
 			}
 			if mm := methodPattern.FindStringSubmatch(formAttrs); len(mm) > 1 {
 				fe.Method = strings.ToUpper(mm[1])
 			}
-
-			// Input fields
 			for _, pat := range []*regexp.Regexp{inputPattern, selectPattern, textareaPattern} {
 				inputs := pat.FindAllStringSubmatch(formBody, -1)
 				for _, im := range inputs {
 					if len(im) > 1 {
 						fe.Inputs = append(fe.Inputs, im[1])
+						visitMu.Lock()
 						if !paramSet[im[1]] {
 							paramSet[im[1]] = true
 							result.Parameters = append(result.Parameters, im[1])
 						}
+						visitMu.Unlock()
 					}
 				}
 			}
-
+			visitMu.Lock()
 			result.Forms = append(result.Forms, fe)
+			visitMu.Unlock()
 		}
 
-		// Detect API endpoints
 		apiPatterns := []string{"/api/", "/v1/", "/v2/", "/v3/", "/graphql", "/rest/"}
 		for _, ap := range apiPatterns {
 			if strings.Contains(currentURL, ap) {
+				visitMu.Lock()
 				found := false
 				for _, e := range result.Endpoints {
 					if e == currentURL {
@@ -188,7 +203,53 @@ func RunCrawler(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 				if !found {
 					result.Endpoints = append(result.Endpoints, currentURL)
 				}
+				visitMu.Unlock()
 			}
+		}
+
+		// Enqueue new URLs
+		queueMu.Lock()
+		for _, u := range newURLs {
+			queue = append(queue, u)
+		}
+		queueMu.Unlock()
+	}
+
+	// Process initial queue
+	for len(queue) > 0 {
+		queueMu.Lock()
+		if len(queue) == 0 {
+			queueMu.Unlock()
+			break
+		}
+		// Drain current queue batch
+		batch := make([]string, len(queue))
+		copy(batch, queue)
+		queue = queue[:0]
+		queueMu.Unlock()
+
+		for _, u := range batch {
+			visitMu.Lock()
+			tooMany := len(visited) >= maxPages
+			visitMu.Unlock()
+			if tooMany {
+				break
+			}
+			wg.Add(1)
+			sem <- struct{}{}
+			go processURL(u)
+		}
+		wg.Wait()
+
+		// Check if we should stop
+		visitMu.Lock()
+		tooMany := len(visited) >= maxPages
+		visitMu.Unlock()
+		queueMu.Lock()
+		empty := len(queue) == 0
+		queueMu.Unlock()
+		if tooMany || empty {
+			break
 		}
 	}
 
@@ -257,9 +318,49 @@ func RunWhois(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 	result := WhoisResult{Domain: cfg.Domain, RawOutput: truncate(body, 2000)}
 
-	// Simple extraction from RDAP JSON
-	if strings.Contains(body, "registrar") {
-		log.Info("WHOIS data retrieved for %s", cfg.Domain)
+	// Parse RDAP JSON response
+	var rdap struct {
+		Handle  string `json:"handle"`
+		LDHName string `json:"ldhName"`
+		Links   []struct {
+			Href string `json:"href"`
+		} `json:"links"`
+		Events []struct {
+			Action string `json:"eventAction"`
+			Date   string `json:"eventDate"`
+		} `json:"events"`
+		Entities []struct {
+			Roles      []string `json:"roles"`
+			VcardArray []any    `json:"vcardArray"`
+			Handle     string   `json:"handle"`
+		} `json:"entities"`
+		Nameservers []struct {
+			LDHName string `json:"ldhName"`
+		} `json:"nameservers"`
+	}
+	if err := json.Unmarshal([]byte(body), &rdap); err == nil {
+		for _, e := range rdap.Events {
+			switch e.Action {
+			case "registration":
+				result.CreatedDate = e.Date
+			case "expiration":
+				result.ExpiryDate = e.Date
+			}
+		}
+		for _, ent := range rdap.Entities {
+			for _, role := range ent.Roles {
+				if role == "registrar" {
+					result.Registrar = ent.Handle
+				}
+			}
+		}
+		for _, ns := range rdap.Nameservers {
+			result.NameServers = append(result.NameServers, strings.TrimSuffix(ns.LDHName, "."))
+		}
+		log.Info("WHOIS: Registrar=%s Created=%s Expires=%s NS=%d",
+			result.Registrar, result.CreatedDate, result.ExpiryDate, len(result.NameServers))
+	} else {
+		log.Debug("RDAP JSON parse failed: %v", err)
 	}
 
 	report.Add(core.Finding{

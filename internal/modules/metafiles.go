@@ -147,6 +147,70 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 		}
 	}
 
+	// ── OIDC/OAuth metadata analysis ──
+	for _, oidcPath := range []string{"/.well-known/openid-configuration", "/.well-known/oauth-authorization-server"} {
+		oidcBody, oidcStatus, _ := core.FetchBodyRL(client, target+oidcPath, cfg.UserAgent, cfg.RL)
+		if oidcStatus == 200 && strings.Contains(oidcBody, "grant_types") {
+			lowerBody := strings.ToLower(oidcBody)
+			var dangerousGrants []string
+			if strings.Contains(lowerBody, `"password"`) || strings.Contains(lowerBody, `"password"`) {
+				dangerousGrants = append(dangerousGrants, "password (resource owner)")
+			}
+			if strings.Contains(lowerBody, `"implicit"`) {
+				dangerousGrants = append(dangerousGrants, "implicit (deprecated)")
+			}
+			if len(dangerousGrants) > 0 {
+				log.Warn("OIDC metadata at %s exposes dangerous grants: %v", oidcPath, dangerousGrants)
+				report.Add(core.Finding{
+					Module:      "metafiles",
+					WSTG:        "WSTG-CONF-07",
+					Title:       fmt.Sprintf("OAuth/OIDC dangerous grant types enabled: %s", strings.Join(dangerousGrants, ", ")),
+					Severity:    core.SevMedium,
+					Description: "The password grant enables brute-force if client_id is discovered. The implicit grant is deprecated and vulnerable to token leakage.",
+				})
+			}
+			break
+		}
+	}
+
+	// ── Fingerprint-aware path probing ──
+	techPaths := []struct {
+		Path string
+		Desc string
+	}{
+		{"/pf/heartbeat.ping", "PingFederate heartbeat"},
+		{"/pf-ws/rest/sessionMgmt/", "PingFederate session management API"},
+		{"/wp-json/", "WordPress REST API namespace"},
+		{"/wp-json/wp/v2/users", "WordPress user enumeration"},
+		{"/wp-signup.php", "WordPress signup page"},
+		{"/xmlrpc.php", "WordPress XML-RPC"},
+		{"/wp-admin/maint/repair.php", "WordPress database repair"},
+		{"/.auth/me", "Azure App Service auth"},
+		{"/.auth/login/aad", "Azure AAD login"},
+	}
+	for _, tp := range techPaths {
+		body, status, err := core.FetchBodyRL(client, target+tp.Path, cfg.UserAgent, cfg.RL)
+		if err != nil || (status != 200 && status != 401 && status != 403) {
+			continue
+		}
+		if status == 200 && len(body) > 0 {
+			log.Warn("Sensitive path accessible: %s (%s)", tp.Path, tp.Desc)
+			sev := core.SevLow
+			if strings.Contains(tp.Path, "heartbeat") || strings.Contains(tp.Path, "sessionMgmt") || strings.Contains(tp.Path, "users") {
+				sev = core.SevMedium
+			}
+			report.Add(core.Finding{
+				Module:      "metafiles",
+				WSTG:        "WSTG-INFO-03",
+				Title:       fmt.Sprintf("Sensitive endpoint accessible: %s (%s)", tp.Path, tp.Desc),
+				Severity:    sev,
+				Description: fmt.Sprintf("The %s endpoint returned status %d.", tp.Desc, status),
+			})
+		} else if status == 401 || status == 403 {
+			log.Info("Protected endpoint exists: %s (%s) → %d", tp.Path, tp.Desc, status)
+		}
+	}
+
 	// ── 6. Cross-domain policy files (WSTG-CONF-08) ──
 	body, status, _ = core.FetchBodyRL(client, target+"/crossdomain.xml", cfg.UserAgent, cfg.RL)
 	if status == 200 && strings.Contains(body, "cross-domain-policy") {

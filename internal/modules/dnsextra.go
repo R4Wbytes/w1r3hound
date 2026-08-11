@@ -58,6 +58,7 @@ func realZoneTransfer(domain, ns string, timeout time.Duration, cfg *core.Config
 	seen := make(map[string]bool)
 
 	// Read responses (AXFR can be multiple messages)
+	var totalRead int64
 	for {
 		// Read 2-byte length
 		lb := make([]byte, 2)
@@ -70,6 +71,11 @@ func realZoneTransfer(domain, ns string, timeout time.Duration, cfg *core.Config
 		}
 		msg := make([]byte, msgLen)
 		if _, err := io.ReadFull(conn, msg); err != nil {
+			break
+		}
+
+		totalRead += int64(msgLen) + 2
+		if totalRead > 10*1024*1024 {
 			break
 		}
 
@@ -103,6 +109,9 @@ func buildDNSQuery(domain string, qtype uint16) []byte {
 
 	// Question: QNAME
 	for _, label := range strings.Split(domain, ".") {
+		if len(label) > 63 {
+			label = label[:63]
+		}
 		buf = append(buf, byte(len(label)))
 		buf = append(buf, []byte(label)...)
 	}
@@ -126,6 +135,7 @@ func extractDNSNames(msg []byte, domain string) []string {
 	readName := func(start int) (string, int) {
 		var labels []string
 		pos := start
+		endPos := -1 // position after the first compression pointer
 		jumps := 0
 		for pos < len(msg) {
 			l := int(msg[pos])
@@ -134,9 +144,11 @@ func extractDNSNames(msg []byte, domain string) []string {
 				break
 			}
 			if l&0xc0 == 0xc0 {
-				// compression pointer — follow once for name, stop advancing
 				if pos+1 >= len(msg) {
 					break
+				}
+				if endPos == -1 {
+					endPos = pos + 2 // save where to continue after this pointer
 				}
 				ptr := int(binary.BigEndian.Uint16(msg[pos:pos+2]) & 0x3fff)
 				if jumps > 10 || ptr >= len(msg) {
@@ -151,6 +163,9 @@ func extractDNSNames(msg []byte, domain string) []string {
 			}
 			labels = append(labels, string(msg[pos+1:pos+1+l]))
 			pos += 1 + l
+		}
+		if endPos != -1 {
+			return strings.Join(labels, "."), endPos
 		}
 		return strings.Join(labels, "."), pos
 	}

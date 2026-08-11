@@ -66,6 +66,10 @@ type Config struct {
 	SharedJSFiles    []string // discovered JS file URLs
 	SharedIPs        []string // resolved IPs / CIDR ranges
 	SharedEndpoints  []string // API endpoints found in JS
+
+	sharedSubdomainsSeen map[string]bool
+	sharedURLsSeen       map[string]bool
+	sharedParamsSeen     map[string]bool
 }
 
 // APIKeyStore removed: the fields were never populated (no env/flag/config
@@ -75,13 +79,15 @@ type Config struct {
 func (c *Config) AddSharedSubdomains(subs []string) {
 	c.SharedMu.Lock()
 	defer c.SharedMu.Unlock()
-	seen := make(map[string]bool)
-	for _, s := range c.SharedSubdomains {
-		seen[s] = true
+	if c.sharedSubdomainsSeen == nil {
+		c.sharedSubdomainsSeen = make(map[string]bool)
+		for _, s := range c.SharedSubdomains {
+			c.sharedSubdomainsSeen[s] = true
+		}
 	}
 	for _, s := range subs {
-		if s != "" && !seen[s] {
-			seen[s] = true
+		if s != "" && !c.sharedSubdomainsSeen[s] {
+			c.sharedSubdomainsSeen[s] = true
 			c.SharedSubdomains = append(c.SharedSubdomains, s)
 		}
 	}
@@ -91,13 +97,15 @@ func (c *Config) AddSharedSubdomains(subs []string) {
 func (c *Config) AddSharedURLs(urls []string) {
 	c.SharedMu.Lock()
 	defer c.SharedMu.Unlock()
-	seen := make(map[string]bool)
-	for _, u := range c.SharedURLs {
-		seen[u] = true
+	if c.sharedURLsSeen == nil {
+		c.sharedURLsSeen = make(map[string]bool)
+		for _, u := range c.SharedURLs {
+			c.sharedURLsSeen[u] = true
+		}
 	}
 	for _, u := range urls {
-		if u != "" && !seen[u] {
-			seen[u] = true
+		if u != "" && !c.sharedURLsSeen[u] {
+			c.sharedURLsSeen[u] = true
 			c.SharedURLs = append(c.SharedURLs, u)
 		}
 	}
@@ -107,13 +115,15 @@ func (c *Config) AddSharedURLs(urls []string) {
 func (c *Config) AddSharedParams(params []string) {
 	c.SharedMu.Lock()
 	defer c.SharedMu.Unlock()
-	seen := make(map[string]bool)
-	for _, p := range c.SharedParams {
-		seen[p] = true
+	if c.sharedParamsSeen == nil {
+		c.sharedParamsSeen = make(map[string]bool)
+		for _, p := range c.SharedParams {
+			c.sharedParamsSeen[p] = true
+		}
 	}
 	for _, p := range params {
-		if p != "" && !seen[p] {
-			seen[p] = true
+		if p != "" && !c.sharedParamsSeen[p] {
+			c.sharedParamsSeen[p] = true
 			c.SharedParams = append(c.SharedParams, p)
 		}
 	}
@@ -381,7 +391,7 @@ func (r *ReconReport) SaveJSON(path string) error {
 }
 
 // ──────────────────────────────────────────────
-//  Logger // W1r3hound Terminal Output
+//  Logger // w1r3hound Terminal Output
 // ──────────────────────────────────────────────
 
 type Logger struct {
@@ -435,7 +445,7 @@ func scrubArgs(args []any) []any {
 	return args
 }
 
-// Module header — styled as W1r3hound protocol activation
+// Module header — styled as w1r3hound protocol activation
 func (l *Logger) Module(name string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

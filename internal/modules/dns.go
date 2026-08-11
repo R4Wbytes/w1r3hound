@@ -122,6 +122,15 @@ var takeoverFingerprints = map[string]string{
 	"cargocollective.com":   "Cargo Collective",
 	"readme.io":             "ReadMe",
 	"gitbook.io":            "GitBook",
+	"elasticbeanstalk.com":  "AWS Elastic Beanstalk",
+	"azureedge.net":         "Azure CDN",
+	"azurefd.net":           "Azure Front Door",
+	"desk.com":              "Desk.com",
+	"createsend.com":        "Campaign Monitor",
+	"intercom.help":         "Intercom",
+	"strikinglydns.com":     "Strikingly",
+	"hatenablog.com":        "HatenaBlog",
+	"smartjobboard.com":     "SmartJobBoard",
 }
 
 func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
@@ -220,10 +229,12 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		log.Info("Found %d SRV records exposing internal services", len(result.SRVRecords))
 	}
 
-	// 5. Wildcard detection
-	result.WildcardDetect = detectWildcard(cfg.Resolver, domain)
+	// 5. Wildcard detection (single DNS query for both detection and IP collection)
+	wildcardIPs := getWildcardIPs(cfg.Resolver, domain)
+	result.WildcardDetect = len(wildcardIPs) > 0
 	if result.WildcardDetect {
 		log.Warn("Wildcard DNS detected — subdomain brute results may contain false positives")
+		log.Info("Wildcard IPs: %v (will filter matches)", mapKeys(wildcardIPs))
 	}
 
 	// 6. Subdomain brute-force
@@ -232,13 +243,6 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		wordlist = defaultSubdomains
 	}
 	log.Info("Brute-forcing %d subdomain candidates...", len(wordlist))
-
-	// Collect wildcard IPs for filtering (instead of discarding everything)
-	var wildcardIPs map[string]bool
-	if result.WildcardDetect {
-		wildcardIPs = getWildcardIPs(cfg.Resolver, domain)
-		log.Info("Wildcard IPs: %v (will filter matches)", mapKeys(wildcardIPs))
-	}
 
 	var (
 		mu    sync.Mutex
@@ -459,14 +463,17 @@ func isSubdomain(target string, roots []string) bool {
 func lookupApexDMARC(target string, cfg *core.Config, log *core.Logger) string {
 	parts := strings.Split(target, ".")
 	if len(parts) < 3 {
-		// target is already an apex (or TLD) — no apex to look up.
 		return ""
 	}
-	apex := strings.Join(parts[1:], ".")
-	recs, err := cfg.Resolver.LookupTXT(context.Background(), "_dmarc."+apex)
-	if err != nil || len(recs) == 0 {
-		return ""
+	// Try progressively shorter suffixes to handle compound TLDs
+	// (e.g. sub.example.co.uk → try example.co.uk, then co.uk)
+	for i := 1; i < len(parts)-1; i++ {
+		candidate := strings.Join(parts[i:], ".")
+		recs, err := cfg.Resolver.LookupTXT(context.Background(), "_dmarc."+candidate)
+		if err != nil || len(recs) == 0 {
+			continue
+		}
+		return recs[0]
 	}
-	// Take the first record (DMARC TXT is a single record per RFC 7489).
-	return recs[0]
+	return ""
 }

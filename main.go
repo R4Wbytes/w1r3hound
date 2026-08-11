@@ -1,4 +1,4 @@
-// W1r3hound — wiretap-grade offensive reconnaissance
+// w1r3hound — wiretap-grade offensive reconnaissance
 //
 // Bug bounty / pentest / CTF recon framework implementing the full
 // OWASP WSTG v4.2 Information Gathering phase, plus ASN mapping, CT
@@ -100,7 +100,7 @@ const banner = `
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡴⠋⣀⣽⣿⡀⠈⠛⠀⠀⠀⠀⣀⣤⣾⡿⣿⡿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⢴⠿⠒⠋⠉⠀⠘⡻⢦⡤⠴⠶⠶⡛⡛⢉⣡⣞⡵⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 
-   [ wiretap-grade offensive recon ]   W1r3hound v1.0 · OWASP WSTG · BBP · CTF
+   [ wiretap-grade offensive recon ]   w1r3hound v1.0.2 · OWASP WSTG · BBP · CTF
 `
 
 const helpFooter = `
@@ -176,23 +176,23 @@ func main() {
 
 	flag.Usage = func() {
 		fmt.Fprint(os.Stderr, banner)
-		fmt.Fprintf(os.Stderr, "\nUsage: W1r3hound -t <target> [options]\n\n")
+		fmt.Fprintf(os.Stderr, "\nUsage: w1r3hound -t <target> [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  W1r3hound -t example.com                       Full system profile\n")
-		fmt.Fprintf(os.Stderr, "  W1r3hound -t example.com -o report              Save scan to report.json/.md\n")
-		fmt.Fprintf(os.Stderr, "  W1r3hound -t example.com -m fingerprinter,sentry,deepdive    Run only specific protocols\n")
-		fmt.Fprintf(os.Stderr, "  W1r3hound -t example.com -passive               Passive recon only\n")
-		fmt.Fprintf(os.Stderr, "  W1r3hound -t example.com -p full -c 50          Full port scan, 50 threads\n")
-		fmt.Fprintf(os.Stderr, "  W1r3hound -t example.com -w subs.txt            Custom subdomain wordlist\n")
-		fmt.Fprintf(os.Stderr, "  W1r3hound -t https://10.10.10.1:8080 -m all     CTF box full scan\n")
+		fmt.Fprintf(os.Stderr, "  w1r3hound -t example.com                       Full system profile\n")
+		fmt.Fprintf(os.Stderr, "  w1r3hound -t example.com -o report              Save scan to report.json/.md\n")
+		fmt.Fprintf(os.Stderr, "  w1r3hound -t example.com -m fingerprinter,sentry,deepdive    Run only specific protocols\n")
+		fmt.Fprintf(os.Stderr, "  w1r3hound -t example.com -passive               Passive recon only\n")
+		fmt.Fprintf(os.Stderr, "  w1r3hound -t example.com -p full -c 50          Full port scan, 50 threads\n")
+		fmt.Fprintf(os.Stderr, "  w1r3hound -t example.com -w subs.txt            Custom subdomain wordlist\n")
+		fmt.Fprintf(os.Stderr, "  w1r3hound -t https://10.10.10.1:8080 -m all     CTF box full scan\n")
 		fmt.Fprint(os.Stderr, helpFooter)
 	}
 
 	flag.Parse()
 
-	// Positional argument support: W1r3hound example.com
+	// Positional argument support: w1r3hound example.com
 	if cfg.Target == "" && flag.NArg() > 0 {
 		cfg.Target = flag.Arg(0)
 	}
@@ -226,7 +226,7 @@ func main() {
 		mapped := mapProtocol(trimmed)
 		if !knownModules[mapped] {
 			fmt.Fprintf(os.Stderr, "\nUnknown protocol: %q\n", strings.TrimSpace(m))
-			fmt.Fprintf(os.Stderr, "Run 'W1r3hound -help' to see the full list of valid -m/-protocols values.\n")
+			fmt.Fprintf(os.Stderr, "Run 'w1r3hound -help' to see the full list of valid -m/-protocols values.\n")
 			os.Exit(1)
 		}
 		cfg.Modules = append(cfg.Modules, mapped)
@@ -241,7 +241,7 @@ func main() {
 		// UTC to match core.NewReport/Finalize, which both timestamp in UTC —
 		// otherwise the filename and the report's own started_at/ended_at
 		// fields can disagree by the local UTC offset.
-		cfg.OutputFile = fmt.Sprintf("W1r3hound_%s_%s", sanitize(cfg.Domain), time.Now().UTC().Format("20060102_150405"))
+		cfg.OutputFile = fmt.Sprintf("w1r3hound_%s_%s", sanitize(cfg.Domain), time.Now().UTC().Format("20060102_150405"))
 	}
 
 	// ── Initialize ──
@@ -255,7 +255,7 @@ func main() {
 	if cfg.SkipSSLCheck {
 		log.Warn("TLS verification disabled — recon traffic is not authenticated (pass -skip-tls-verify=false to enforce)")
 	}
-	fmt.Fprintf(os.Stderr, "\033[90m  Initializing W1r3hound...\033[0m\n")
+	fmt.Fprintf(os.Stderr, "\033[90m  Initializing w1r3hound...\033[0m\n")
 
 	r := core.NewReport(cfg.Target)
 
@@ -393,7 +393,7 @@ func main() {
 	log.Info("Connection closed.")
 }
 
-// mapProtocol translates W1r3hound-themed names → internal module names.
+// mapProtocol translates w1r3hound-themed names → internal module names.
 // Also accepts the internal name directly for backward compat.
 //
 // The themed aliases (recon, fingerprinter, deepdive, cloudsniff, etc.)
@@ -404,7 +404,7 @@ func main() {
 // older scripts — see the "legacy aliases" section below.
 func mapProtocol(name string) string {
 	switch name {
-	// ── new W1r3hound-themed aliases ──
+	// ── w1r3hound-themed aliases ──
 	case "recon":
 		return "whois"
 	case "traceroute":

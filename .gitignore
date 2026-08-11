@@ -1,13 +1,13 @@
 # Compiled binaries
-/W1r3hound
-/W1r3hound-linux
-/W1r3hound-mac
-/W1r3hound.exe
+/w1r3hound
+/w1r3hound-linux
+/w1r3hound-mac
+/w1r3hound.exe
 /w1r3hound
 
 # Scan output (JSON + Markdown reports)
-W1r3hound_*.json
-W1r3hound_*.md
+w1r3hound_*.json
+w1r3hound_*.md
 
 # Go
 *.test

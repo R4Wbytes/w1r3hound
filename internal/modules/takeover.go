@@ -68,6 +68,16 @@ var takeoverSigs = []struct {
 	{"LaunchRock", "launchrock.com", []string{"It looks like you may have taken a wrong turn somewhere"}, true},
 	{"Uptimerobot", "stats.uptimerobot.com", []string{"page not found"}, true},
 	{"Wix", "wixsite.com", []string{"Looks Like This Domain Isn't Connected To A Website Yet"}, true},
+	{"Elastic Beanstalk", "elasticbeanstalk.com", []string{"404 Not Found", "InvalidParameterValue"}, true},
+	{"Azure CDN", "azureedge.net", []string{"The resource you are looking for has been removed", "404 Web Site not found"}, true},
+	{"Azure Front Door", "azurefd.net", []string{"Our services aren't available right now", "The resource you are looking for has been removed"}, true},
+	{"Desk.com", "desk.com", []string{"Sorry, We Couldn't Find That Page", "Please try again or head back to"}, true},
+	{"Campaign Monitor", "createsend.com", []string{"Trying to access your account?", "Double check the URL"}, true},
+	{"Intercom", "custom.intercom.help", []string{"This page is reserved for"}, true},
+	{"Fly.io", "fly.dev", []string{"404 Not Found"}, true},
+	{"SmartJobBoard", "smartjobboard.com", []string{"This job board website is either expired or its domain name is invalid"}, true},
+	{"Strikingly", "s.strikinglydns.com", []string{"But if you're looking to build your own website"}, true},
+	{"HatenaBlog", "hatenablog.com", []string{"404 Blog is not found"}, true},
 }
 
 // genericBodyService lists services whose takeover marker is a generic error

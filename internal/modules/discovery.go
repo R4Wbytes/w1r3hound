@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -31,21 +32,55 @@ func RunWayback(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	client := core.NewHTTPClient(cfg)
 	domain := cfg.Domain
 
-	apiURL := fmt.Sprintf(
-		"https://web.archive.org/cdx/search/cdx?url=*.%s/*&output=json&fl=original&collapse=urlkey&limit=%d",
-		domain, cfg.WaybackLimit,
-	)
-	body, status, err := core.FetchBodyRL(client, apiURL, cfg.UserAgent, cfg.RL)
-	if err != nil || status != 200 {
-		log.Error("Wayback API request failed (status %d): %v", status, err)
-		return
+	var allRows [][]string
+	resumeKey := ""
+	page := 0
+	maxPages := 20 // safety limit
+
+	for page < maxPages {
+		apiURL := fmt.Sprintf(
+			"https://web.archive.org/cdx/search/cdx?url=*.%s/*&output=json&fl=original&collapse=urlkey&limit=%d",
+			domain, cfg.WaybackLimit,
+		)
+		if resumeKey != "" {
+			apiURL += "&resumeKey=" + url.QueryEscape(resumeKey)
+		}
+		apiURL += "&showResumeKey=true"
+
+		body, status, err := core.FetchBodyRL(client, apiURL, cfg.UserAgent, cfg.RL)
+		if err != nil || status != 200 {
+			if page == 0 {
+				log.Error("Wayback API request failed (status %d): %v", status, err)
+			}
+			break
+		}
+
+		var rows [][]string
+		if err := json.Unmarshal([]byte(body), &rows); err != nil {
+			break
+		}
+
+		// Check for resumeKey in last row
+		gotMore := false
+		if len(rows) > 0 {
+			lastRow := rows[len(rows)-1]
+			if len(lastRow) == 1 && !strings.Contains(lastRow[0], "://") {
+				resumeKey = lastRow[0]
+				rows = rows[:len(rows)-1] // remove resumeKey row
+				gotMore = true
+			}
+		}
+
+		allRows = append(allRows, rows...)
+		page++
+
+		if !gotMore {
+			break
+		}
+		log.Debug("Wayback page %d: %d rows (resuming...)", page, len(rows))
 	}
 
-	var rows [][]string
-	if err := json.Unmarshal([]byte(body), &rows); err != nil {
-		log.Error("Failed to parse Wayback response: %v", err)
-		return
-	}
+	rows := allRows
 
 	result := WaybackResult{}
 	seen := make(map[string]bool)
