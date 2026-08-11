@@ -13,7 +13,8 @@
    w1r3hound v1.0.3 · OWASP WSTG · BBP · CTF
 ```
 
-> *"Listen long enough on the wire, and the target tells you everything it never meant to."*
+> *"Privacy is a lie. Security is an illusion. The only thing that's real is the data.
+— Dusan Nemec"*
 
 **w1r3hound** is a single-binary offensive reconnaissance framework for
 bug bounty hunting, penetration testing, and CTF competitions. The name
@@ -50,33 +51,6 @@ the v1.0.2 audit against three authorized targets (Wix-hosted + Apache/PHP):
   error in the log.
 
 Full details in [CHANGELOG.md](CHANGELOG.md).
-
-## What's new in v1.0.2
-
-v1.0.2 closes several false-negative and false-positive gaps found during
-a post-1.0.1 audit against real-world targets:
-
-- **CSP directive analysis** (`sentry`): flags `unsafe-inline`, `unsafe-eval`,
-  wildcard `*` in script-src, missing `default-src`, and `data:` in script-src.
-- **Cookie SameSite=None without Secure** (`sentry`): new finding.
-- **HSTS max-age under 1 year** (`sentry`): flags values below 31536000.
-- **OIDC/OAuth dangerous grants** (`metadata`): parses `openid-configuration`
-  and flags `password` / `implicit` grant types.
-- **Fingerprint-aware path probing** (`metadata`): PingFederate, WordPress,
-  and Azure auth endpoint probes.
-- **Wayback CDX pagination**: uses `resumeKey` for full coverage instead of
-  truncating at 5,000 URLs.
-- **10 new takeover fingerprints**: Beanstalk, Azure CDN, Azure Front Door,
-  Desk.com, Campaign Monitor, Intercom, Fly.io, SmartJobBoard, Strikingly,
-  HatenaBlog (37 services total).
-- **RDAP JSON parsing** (`recon`): registrar + dates + nameservers populated.
-- **Crawler parallelised**: concurrent worker pool, ~8× faster on 100 pages.
-- **Tighter secret regexes**: Twilio / Mailgun / Bearer / Basic Auth now
-  require context and minimum token length (fewer false positives).
-- **DMARC apex for compound TLDs** (`.co.uk`, `.com.br`).
-- **AXFR read loop capped** at 10 MB; **DNS compression pointer** parsing fixed.
-
-See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ## Installation
 
@@ -289,9 +263,6 @@ This tool is for authorized security testing, bug bounty programs, CTF
 competitions, and educational purposes only. Always have explicit
 permission before profiling any target. Unauthorized access may violate
 laws in your jurisdiction.
-
-> *"Listen long enough on the wire, and the target tells you everything
->  it never meant to."*
 
 ## License
 
