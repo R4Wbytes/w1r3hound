@@ -1,7 +1,7 @@
 package modules
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -87,6 +87,25 @@ var serviceNames = map[int]string{
 	50070: "hadoop-namenode",
 }
 
+// maxPortScanIPs caps how many of a target's resolved addresses get a full
+// port sweep. Scanning every A/AAAA record unconditionally would multiply
+// scan time without bound for targets with many records (round-robin LBs,
+// large anycast setups); capping keeps the module's cost predictable while
+// still covering more than the previous single-IP behaviour.
+const maxPortScanIPs = 3
+
+// cdnPorts are cPanel/WHM and common alt-HTTP(S) ports that tend to cluster
+// on CDN/reverse-proxy edges rather than origin servers.
+var cdnPorts = []int{2082, 2083, 2086, 2087, 2095, 2096, 8080, 8443, 8880}
+
+// dangerousServices are services whose exposure is independently notable
+// regardless of what else is open.
+var dangerousServices = map[string]bool{
+	"telnet": true, "ftp": true, "rdp": true, "vnc": true, "redis": true,
+	"mongodb": true, "memcached": true, "elasticsearch": true, "couchdb": true,
+	"adb": true, "mysql": true, "postgresql": true, "mssql": true, "oracle": true,
+}
+
 func RunPortScan(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	log.Module("PORTSCAN // Network Service Discovery")
 
@@ -96,32 +115,22 @@ func RunPortScan(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	}
 
 	host := extractHost(cfg.Target)
-	ips, err := cfg.Resolver.LookupHost(context.Background(), host)
+	resolveCtx, resolveCancel := cfg.Context(cfg.Timeout)
+	ips, err := cfg.Resolver.LookupHost(resolveCtx, host)
+	resolveCancel()
 	if err != nil || len(ips) == 0 {
 		log.Error("Could not resolve host: %v", err)
 		return
 	}
-	// Prefer an IPv4 address for scanning
-	ip := ips[0]
-	for _, candidate := range ips {
-		if net.ParseIP(candidate).To4() != nil {
-			ip = candidate
-			break
-		}
-	}
 
-	// Warn if the target resolves to a CDN — scanning the CDN edge is pointless
-	// (you'd be scanning Cloudflare, not the origin). The real value is finding
-	// the origin IP (via CT logs, SPF records, or historical DNS).
-	if cdn := detectCDNByIP(ip); cdn != "" {
-		log.Warn("%s resolves to %s CDN (%s) — port scan hits the CDN edge, not the origin", host, cdn, ip)
-		log.Warn("To scan the real server, find the origin IP (CT logs, SPF, DNS history) first")
+	targets, skipped := selectScanIPs(ips, maxPortScanIPs)
+	if len(skipped) > 0 {
+		log.Warn("%s resolves to %d IPs — scanning the first %d (%s); use -t <ip> to target another directly",
+			host, len(ips), len(targets), strings.Join(targets, ", "))
 	}
-
-	log.Info("Scanning %s (%s)...", host, ip)
 
 	ports := selectPorts(cfg.Ports)
-	log.Info("Scanning %d ports...", len(ports))
+	log.Info("Scanning %d ports across %d IP(s)...", len(ports), len(targets))
 
 	// Respect -timeout for the connect, but keep the banner-read window short so
 	// open web ports (which send no unsolicited banner) don't stall the scan.
@@ -134,6 +143,26 @@ func RunPortScan(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		bannerWindow = dialTimeout
 	}
 
+	for _, ip := range targets {
+		// Warn if the target resolves to a CDN — scanning the CDN edge is
+		// pointless (you'd be scanning Cloudflare, not the origin). The real
+		// value is finding the origin IP (via CT logs, SPF records, or
+		// historical DNS).
+		if cdn := detectCDNByIP(ip); cdn != "" {
+			log.Warn("%s (%s) resolves to %s CDN — port scan hits the CDN edge, not the origin", host, ip, cdn)
+			log.Warn("To scan the real server, find the origin IP (CT logs, SPF, DNS history) first")
+		}
+		log.Info("Scanning %s (%s)...", host, ip)
+
+		result := scanOneIP(cfg, log, host, ip, ports, dialTimeout, bannerWindow)
+		reportPortScanResult(report, log, result)
+	}
+}
+
+// scanOneIP sweeps ports concurrently against a single IP and returns the
+// findings. Split out of RunPortScan so the P4 multi-IP loop can call it once
+// per resolved address.
+func scanOneIP(cfg *core.Config, log *core.Logger, host, ip string, ports []int, dialTimeout, bannerWindow time.Duration) PortScanResult {
 	result := PortScanResult{Host: ip}
 	var (
 		mu sync.Mutex
@@ -155,12 +184,8 @@ func RunPortScan(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			// net.JoinHostPort (not Sprintf) so an IPv6 target is bracketed
 			// correctly — "%s:%d" on a bare IPv6 literal produces an address
 			// net.Dial can't parse (go vet flags this).
-			// PERF: ctx-aware so SIGINT tears down all in-flight port dials
-			// instead of blocking for dialTimeout.
 			addr := net.JoinHostPort(ip, strconv.Itoa(p))
-			ctx, cancel := cfg.Context(dialTimeout)
-			conn, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp", addr)
-			cancel()
+			conn, err := dialWithRetry(cfg, addr, dialTimeout)
 			if err != nil {
 				return
 			}
@@ -170,17 +195,8 @@ func RunPortScan(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 				State:   "open",
 				Service: serviceNames[p],
 			}
-
-			// Banner grab. Use a short window: HTTP/TLS ports never send an
-			// unsolicited banner, so a long deadline just stalls the scan.
-			conn.SetReadDeadline(time.Now().Add(bannerWindow))
-			buf := make([]byte, 1024)
-			n, _ := conn.Read(buf)
+			pi.Banner = probeBanner(conn, pi.Service, host, bannerWindow)
 			conn.Close()
-			if n > 0 {
-				banner := strings.TrimSpace(string(buf[:n]))
-				pi.Banner = truncate(banner, 200)
-			}
 
 			mu.Lock()
 			result.OpenPorts = append(result.OpenPorts, pi)
@@ -191,15 +207,92 @@ func RunPortScan(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	}
 	wg.Wait()
 
-	// Sort by port number
 	sort.Slice(result.OpenPorts, func(i, j int) bool {
 		return result.OpenPorts[i].Port < result.OpenPorts[j].Port
 	})
+	log.Info("Total open ports on %s: %d", ip, len(result.OpenPorts))
+	return result
+}
 
-	log.Info("Total open ports: %d", len(result.OpenPorts))
+// dialWithRetry connects once and, only on a *timeout* (not a definitive
+// "connection refused"), retries exactly once. A dropped SYN under a short
+// -timeout otherwise reads as "closed" when the port may well be open —
+// retrying on refusal would just add noise since that's a firm answer.
+func dialWithRetry(cfg *core.Config, addr string, dialTimeout time.Duration) (net.Conn, error) {
+	dial := func() (net.Conn, error) {
+		ctx, cancel := cfg.Context(dialTimeout)
+		defer cancel()
+		return (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp", addr)
+	}
+	conn, err := dial()
+	if err == nil {
+		return conn, nil
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return dial()
+	}
+	return nil, err
+}
 
-	// Detect CDN / reverse proxy — many open ports may belong to the CDN, not the origin
-	cdnPorts := []int{2082, 2083, 2086, 2087, 2095, 2096, 8080, 8443, 8880}
+// probeBanner reads whatever the service offers on connect and, if that's
+// nothing, tries to elicit a response: a minimal HEAD request for ports
+// already classified as web (they never speak first), or a bare CRLF for
+// everything else (some services wait for input before responding). Passive
+// services (SSH, FTP, SMTP, …) that already greet on connect are unaffected —
+// the active probe only fires when the passive read came up empty.
+func probeBanner(conn net.Conn, service, hostHeader string, bannerWindow time.Duration) string {
+	buf := make([]byte, 1024)
+
+	conn.SetReadDeadline(time.Now().Add(bannerWindow))
+	n, _ := conn.Read(buf)
+
+	if n == 0 {
+		if strings.Contains(service, "http") {
+			conn.SetWriteDeadline(time.Now().Add(bannerWindow))
+			fmt.Fprintf(conn, "HEAD / HTTP/1.0\r\nHost: %s\r\n\r\n", hostHeader)
+		} else {
+			conn.SetWriteDeadline(time.Now().Add(bannerWindow))
+			conn.Write([]byte("\r\n"))
+		}
+		conn.SetReadDeadline(time.Now().Add(bannerWindow))
+		n, _ = conn.Read(buf)
+	}
+	if n == 0 {
+		return ""
+	}
+	return truncate(strings.TrimSpace(string(buf[:n])), 200)
+}
+
+// selectScanIPs dedupes the resolved addresses, prefers IPv4 first (matching
+// the previous single-IP behaviour's preference), and caps the result at max.
+// Returns the IPs to scan and the ones dropped by the cap.
+func selectScanIPs(ips []string, max int) (targets, skipped []string) {
+	seen := make(map[string]bool, len(ips))
+	var v4, v6 []string
+	for _, ip := range ips {
+		if seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		if net.ParseIP(ip).To4() != nil {
+			v4 = append(v4, ip)
+		} else {
+			v6 = append(v6, ip)
+		}
+	}
+	ordered := append(v4, v6...)
+	if len(ordered) <= max {
+		return ordered, nil
+	}
+	return ordered[:max], ordered[max:]
+}
+
+// reportPortScanResult applies the CDN/dangerous-service analysis (previously
+// inline in RunPortScan) to a single IP's scan result and adds findings.
+func reportPortScanResult(report *core.ReconReport, log *core.Logger, result PortScanResult) {
+	ip := result.Host
+
 	cdnPortCount := 0
 	for _, p := range result.OpenPorts {
 		for _, cp := range cdnPorts {
@@ -211,12 +304,12 @@ func RunPortScan(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	}
 	isBehindCDN := cdnPortCount >= 4
 	if isBehindCDN {
-		log.Warn("Target appears to be behind a CDN/reverse proxy (Cloudflare, etc.)")
+		log.Warn("%s appears to be behind a CDN/reverse proxy (Cloudflare, etc.)", ip)
 		log.Warn("  %d ports may belong to the CDN infrastructure, not the origin server", cdnPortCount)
 		report.Add(core.Finding{
 			Module:      "portscan",
 			WSTG:        "WSTG-INFO-10",
-			Title:       "Target behind CDN/WAF — port results may reflect CDN infrastructure",
+			Title:       fmt.Sprintf("Target behind CDN/WAF (%s) — port results may reflect CDN infrastructure", ip),
 			Severity:    core.SevInfo,
 			Description: fmt.Sprintf("%d of %d open ports are typical CDN ports (2082-2096, 8080, 8443, 8880). Results may not represent the origin server.", cdnPortCount, len(result.OpenPorts)),
 		})
@@ -225,7 +318,6 @@ func RunPortScan(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	// Flag dangerous services (but only if not behind CDN, or if they're non-CDN ports)
 	dangerous := []string{}
 	for _, p := range result.OpenPorts {
-		// Skip flagging CDN ports as dangerous
 		isCDNPort := false
 		for _, cp := range cdnPorts {
 			if p.Port == cp {
@@ -236,20 +328,16 @@ func RunPortScan(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		if isBehindCDN && isCDNPort {
 			continue
 		}
-
-		switch p.Service {
-		case "telnet", "ftp", "rdp", "vnc", "redis", "mongodb",
-			"memcached", "elasticsearch", "couchdb", "adb",
-			"mysql", "postgresql", "mssql", "oracle":
+		if dangerousServices[p.Service] {
 			dangerous = append(dangerous, fmt.Sprintf("%d/%s", p.Port, p.Service))
 		}
 	}
 	if len(dangerous) > 0 {
-		log.Warn("Potentially dangerous exposed services: %v", dangerous)
+		log.Warn("Potentially dangerous exposed services on %s: %v", ip, dangerous)
 		report.Add(core.Finding{
 			Module:      "portscan",
 			WSTG:        "WSTG-CONF-01",
-			Title:       fmt.Sprintf("Dangerous services exposed: %d", len(dangerous)),
+			Title:       fmt.Sprintf("Dangerous services exposed on %s: %d", ip, len(dangerous)),
 			Severity:    core.SevHigh,
 			Description: strings.Join(dangerous, ", "),
 		})

@@ -3,6 +3,7 @@
 package core
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -21,20 +22,23 @@ import (
 // ──────────────────────────────────────────────
 
 type Config struct {
-	Target       string
-	Domain       string        // extracted root domain
-	Concurrency  int           // max goroutines per module
-	Timeout      time.Duration // per-request timeout
-	UserAgent    string
-	OutputFile   string // path for JSON report
-	Verbose      bool
-	Modules      []string // which modules to run ("all" = everything)
-	Wordlist     string   // path to a wordlist for dir bruteforce
-	Ports        string   // port spec for scanner (e.g. "top100", "1-1024", "full")
-	RateLimit    int      // requests per second (0 = unlimited)
-	SkipSSLCheck bool
-	Passive      bool         // passive-only mode (no active probing)
-	RL           *RateLimiter // rate limiter shared across modules
+	Target        string
+	Domain        string        // extracted root domain
+	Concurrency   int           // max goroutines per module
+	Timeout       time.Duration // per-request timeout
+	UserAgent     string
+	OutputFile    string // path for JSON report
+	Verbose       bool
+	Modules       []string // which modules to run ("all" = everything)
+	Wordlist      string   // path to a wordlist for subdomain bruteforce
+	DirWordlist   string   // path to a wordlist for directory/file bruteforce (falls back to the embedded list when empty)
+	DirExtensions string   // comma-separated extensions appended to each dirbrute word (e.g. ".bak,.php,.zip,~")
+	Resolvers     []string // ip[:port] pool for the raw-UDP DNS brute-force engine; empty = use Resolver (stdlib) as today
+	Ports         string   // port spec for scanner (e.g. "top100", "1-1024", "full")
+	RateLimit     int      // requests per second (0 = unlimited)
+	SkipSSLCheck  bool
+	Passive       bool         // passive-only mode (no active probing)
+	RL            *RateLimiter // rate limiter shared across modules
 
 	// Cancel is the root context cancellation function. Modules that perform
 	// raw net.Dial/tls.Dial (outside the shared HTTP client) should derive a
@@ -171,7 +175,12 @@ func NewResolver(server string, timeout time.Duration) *net.Resolver {
 	if server == "" {
 		return net.DefaultResolver
 	}
-	if !strings.Contains(server, ":") {
+	// SplitHostPort fails when there's no port, whether the host is a plain
+	// IPv4/hostname or a bare IPv6 literal — JoinHostPort then adds ":53" and
+	// correctly brackets IPv6 in the process. A strings.Contains(server, ":")
+	// check would misfire on bare IPv6 literals (they contain ":" but have no
+	// port), silently breaking every lookup through that resolver.
+	if _, _, err := net.SplitHostPort(server); err != nil {
 		server = net.JoinHostPort(server, "53")
 	}
 	d := &net.Dialer{Timeout: timeout}
@@ -183,6 +192,31 @@ func NewResolver(server string, timeout time.Duration) *net.Resolver {
 	}
 }
 
+// ReadLines reads a plain-text list file: one entry per line, blank lines
+// and "#"-prefixed comments skipped. Single source of truth for the several
+// wordlist-shaped inputs the CLI accepts (subdomain wordlist, dirbrute
+// wordlist, DNS resolver list) — previously each had its own copy of this
+// same ~15-line loader.
+func ReadLines(path string) []string {
+	if path == "" {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var lines []string
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line != "" && !strings.HasPrefix(line, "#") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 // ──────────────────────────────────────────────
 //  Shared HTTP Client
 // ──────────────────────────────────────────────
@@ -190,6 +224,10 @@ func NewResolver(server string, timeout time.Duration) *net.Resolver {
 func NewHTTPClient(cfg *Config) *http.Client {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: cfg.SkipSSLCheck},
+		// A hand-built Transport doesn't inherit http.DefaultTransport's h2
+		// auto-negotiation, so without this Go silently stays on HTTP/1.1 even
+		// against servers that support HTTP/2.
+		ForceAttemptHTTP2: true,
 		DialContext: (&net.Dialer{
 			Timeout:   cfg.Timeout,
 			KeepAlive: 30 * time.Second,

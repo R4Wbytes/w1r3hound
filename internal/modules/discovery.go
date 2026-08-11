@@ -606,6 +606,84 @@ var defaultDirPaths = []string{
 	"/cgi-bin/", "/cgi-bin/test",
 }
 
+// loadDirPaths returns the wordlist to use for directory bruteforce: the
+// operator's -dir-wordlist when set and readable, otherwise the embedded
+// defaultDirPaths. Reuses core.ReadLines — same one-entry-per-line format as
+// the subdomain wordlist, just normalised into leading-slash paths here
+// instead of FQDNs.
+func loadDirPaths(cfg *core.Config, log *core.Logger) []string {
+	if cfg.DirWordlist == "" {
+		return defaultDirPaths
+	}
+	words := core.ReadLines(cfg.DirWordlist)
+	if len(words) == 0 {
+		log.Warn("Could not read -dir-wordlist %q (or it's empty) — falling back to the embedded path list", cfg.DirWordlist)
+		return defaultDirPaths
+	}
+	paths := make([]string, 0, len(words))
+	for _, w := range words {
+		if p := normalizeDirPath(w); p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths
+}
+
+// normalizeDirPath ensures a wordlist entry becomes a proper request path.
+// Most public wordlists (SecLists, raft-*, etc.) list bare words like "admin"
+// or "backup.zip" with no leading slash; ours (and the target URL join) expect
+// one.
+func normalizeDirPath(entry string) string {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return ""
+	}
+	if !strings.HasPrefix(entry, "/") {
+		entry = "/" + entry
+	}
+	return entry
+}
+
+// expandDirExtensions appends each extension to every non-directory path
+// (paths ending in "/" are left alone — appending ".bak" to "/backup/" isn't
+// meaningful), in addition to keeping the original path. Mirrors ffuf/
+// feroxbuster's -e behaviour.
+func expandDirExtensions(paths []string, extList string) []string {
+	var exts []string
+	for _, e := range strings.Split(extList, ",") {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		if e != "~" && !strings.HasPrefix(e, ".") {
+			e = "." + e
+		}
+		exts = append(exts, e)
+	}
+	if len(exts) == 0 {
+		return paths
+	}
+
+	seen := make(map[string]bool, len(paths)*(len(exts)+1))
+	out := make([]string, 0, len(paths)*(len(exts)+1))
+	add := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	for _, p := range paths {
+		add(p)
+		if strings.HasSuffix(p, "/") {
+			continue
+		}
+		for _, e := range exts {
+			add(p + e)
+		}
+	}
+	return out
+}
+
 func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	log.Module("BRUTEFORCE // Hidden Path & File Discovery")
 
@@ -616,7 +694,12 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 	client := core.NewHTTPClient(cfg)
 	target := normalizeTarget(cfg.Target)
-	paths := defaultDirPaths
+	paths := loadDirPaths(cfg, log)
+	if cfg.DirExtensions != "" {
+		before := len(paths)
+		paths = expandDirExtensions(paths, cfg.DirExtensions)
+		log.Info("Extension fuzzing (%s): %d → %d paths", cfg.DirExtensions, before, len(paths))
+	}
 
 	// ── Soft-404 baseline detection ──
 	// Request a path that certainly doesn't exist and record the response

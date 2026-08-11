@@ -1,7 +1,6 @@
 package modules
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -105,7 +104,10 @@ func RunSaaS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			host = strings.SplitN(host, "/", 2)[0]
 
 			// Primary signal: does the vanity subdomain resolve?
-			if _, err := cfg.Resolver.LookupHost(context.Background(), host); err != nil {
+			lookupCtx, lookupCancel := cfg.Context(cfg.Timeout)
+			_, err := cfg.Resolver.LookupHost(lookupCtx, host)
+			lookupCancel()
+			if err != nil {
 				return // doesn't resolve → instance doesn't exist
 			}
 

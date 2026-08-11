@@ -5,6 +5,94 @@ follows [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) where
 applicable.
 
+## [1.0.5] — 2026-08-11
+
+Four rounds of fixes driven by two external audits
+(`AUDIT_w1r3hound_DNS.md` — DNS resolver/AXFR/wildcard/takeover focus, and
+`AUDIT_w1r3hound.md` — full-framework review against the
+subfinder/httpx/dnsx/naabu/nuclei/massdns/reconftw baseline), triaged and
+verified against the code before implementing.
+
+### DNS Resolver Correctness & Security (from the DNS audit)
+
+- **IPv6 custom resolver broken** (`internal/core/core.go`, `NewResolver`):
+  `-resolver 2001:4860:4860::8888` silently failed every lookup — the
+  "does it contain `:`" heuristic used to decide whether a port was already
+  present misfired on bare IPv6 literals. Now uses `net.SplitHostPort`,
+  which also brackets IPv6 correctly.
+- **`-timeout`/SIGINT not respected by DNS lookups**: NS/MX/TXT/DMARC/SRV/
+  CNAME/wildcard/brute lookups across `dns.go`, `dnsextra.go`, `takeover.go`,
+  `asn.go`, `portscan.go`, and `saas.go` used `context.Background()`, so
+  `-timeout` had no effect and Ctrl+C couldn't interrupt an in-flight
+  lookup. All 13 call sites now derive from `cfg.Context(cfg.Timeout)`.
+- **IP targets treated as broken domains** (`dns.go`, `RunDNS`): `-t
+  10.10.10.10` was normalised to the nonsense apex `"10.10"` and every NS/
+  MX/TXT/brute query ran against it. Now skipped with an explanatory log
+  when the target is a bare IP.
+- **Fixed DNS transaction ID** (`dnsextra.go`, `buildDNSQuery`): the AXFR
+  query used a hardcoded `0x1337` ID. Now `crypto/rand`-generated —
+  closes a spoofing/cache-poisoning weakness ahead of the raw-UDP engine
+  below, which reuses this query builder.
+- **Wildcard detection: single, hardcoded probe** (`dns.go`): despite the
+  variable name, the "random" wildcard-probe label was a fixed string, and
+  only one probe was fired — a round-robin wildcard pool could evade
+  detection, and a target could special-case the fixed label. Replaced
+  `detectWildcard`/`getWildcardIPs` with `wildcardSet`: 4 real
+  `crypto/rand` probes, IPs unioned. Also removed a redundant double-probe
+  in `RunPermute`.
+
+### Directory Bruteforce & Apex Normalisation (quick wins)
+
+- **`-dir-wordlist` / `-dir-ext`** (`discovery.go`, `main.go`): directory
+  bruteforce previously ignored `-w` entirely and always used the embedded
+  162-path list. Now accepts its own wordlist and extension-fuzzing list
+  (`.bak,.php,.zip,~`-style, ffuf/feroxbuster-style), reusing the same
+  wordlist loader as subdomain brute-force.
+- **Real Mozilla Public Suffix List** (`internal/modules/psl.go`,
+  `internal/modules/data/public_suffix_list.dat`, embedded via `go:embed`):
+  replaces a ~50-entry curated `compoundTLDs` map. Fixes apex normalisation
+  for any compound TLD not in that curated set (`.edu.co`, `.gov.br`,
+  `.ac.nz`, `.gov.cn`, …), which previously mis-split the apex and threw off
+  DNS infrastructure queries and DMARC/SPF inheritance for those targets.
+- **HTTP/2** (`core.go`, `NewHTTPClient`): the hand-built `http.Transport`
+  never negotiated h2 (`ForceAttemptHTTP2` unset). Now enabled.
+
+### Portscan, Wildcard Amplification & Passive Coverage
+
+- **Portscan: single IP, passive-only banner grab, no retry**
+  (`portscan.go`): now scans up to 3 resolved IPs (deduped, IPv4
+  preferred) instead of only `ips[0]`; sends an active `HEAD` probe on
+  classified web ports and a generic `\r\n` on others when the passive read
+  comes back empty (HTTP/TLS ports never speak first); retries once on a
+  connection *timeout* (not on a definitive "connection refused").
+- **Certspotter** added as a 6th passive subdomain source (`passive.go`),
+  same keyless/coverage-tracked pattern as the existing 5.
+
+### Raw-UDP DNS Brute-Force Engine (opt-in)
+
+- **`-resolvers <file>`** (`main.go`, new `internal/modules/dnsengine.go`):
+  subdomain brute-force and permutation can now resolve through a
+  rotating pool of resolvers over raw UDP instead of the stdlib
+  `net.Resolver`, with retry-on-a-different-resolver and the shared
+  `RateLimiter` finally governing DNS query rate (`-rate` previously only
+  applied to HTTP). Ships with a from-scratch, bounds-checked DNS message
+  parser (A/AAAA/CNAME) that validates the response's transaction ID and
+  echoed question name before accepting it. **Opt-in only** — without
+  `-resolvers`, behaviour is byte-for-byte the same as before (system/
+  `-resolver` resolver, unchanged code path).
+
+### Compatibility
+
+- All packages pass `go test -race -count=1`; `gofmt -l .` and
+  `go vet ./...` clean.
+- No behaviour change for any existing flag; every fix above is either a
+  correctness fix on the existing default path or gated behind a new,
+  opt-in flag (`-dir-wordlist`, `-dir-ext`, `-resolvers`).
+- Live-verified against real, authorized targets (not just unit tests):
+  `scanme.nmap.org` (portscan multi-IP + active banner probing) and
+  `hackerone.com` (passive sources incl. certspotter; DNS brute-force
+  producing identical subdomain/IP results with and without `-resolvers`).
+
 ## [1.0.4] — 2026-08-11
 
 ### False-Negative Fixes (validated against an authorized

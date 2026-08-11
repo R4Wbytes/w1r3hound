@@ -1,7 +1,6 @@
 package modules
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -127,9 +126,11 @@ func RunTakeover(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 			// Get the CNAME to help identify the service
 			cname := ""
-			if c, err := cfg.Resolver.LookupCNAME(context.Background(), sub); err == nil {
+			cnameCtx, cnameCancel := cfg.Context(cfg.Timeout)
+			if c, err := cfg.Resolver.LookupCNAME(cnameCtx, sub); err == nil {
 				cname = strings.TrimSuffix(c, ".")
 			}
+			cnameCancel()
 
 			// Fetch the HTTP body
 			var body string
@@ -267,11 +268,16 @@ func RunPermute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		resolved []string
 	)
 
-	// Get wildcard IPs to filter
-	var wildcardIPs map[string]bool
-	if detectWildcard(cfg.Resolver, domain) {
-		wildcardIPs = getWildcardIPs(cfg.Resolver, domain)
-	}
+	// Get wildcard IPs to filter (single multi-probe round — see wildcardSet).
+	// Wildcard detection is a handful of probes, not the high-volume path P1
+	// targets, so it stays on the stdlib resolver regardless of -resolvers.
+	wcCtx, wcCancel := cfg.Context(cfg.Timeout)
+	wildcardIPs := wildcardSet(wcCtx, cfg.Resolver, domain)
+	wcCancel()
+
+	// Uses the raw-UDP resolver pool when -resolvers was supplied, otherwise
+	// the stdlib resolver as before (see selectResolver).
+	resolver := selectResolver(cfg)
 
 	for cand := range candidates {
 		wg.Add(1)
@@ -281,11 +287,13 @@ func RunPermute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			ips, err := cfg.Resolver.LookupHost(context.Background(), cand)
+			candCtx, candCancel := cfg.Context(cfg.Timeout)
+			ips, err := resolver.LookupHost(candCtx, cand)
+			candCancel()
 			if err != nil || len(ips) == 0 {
 				return
 			}
-			if wildcardIPs != nil && allIPsMatch(ips, wildcardIPs) {
+			if allIPsMatch(ips, wildcardIPs) {
 				return
 			}
 			mu.Lock()

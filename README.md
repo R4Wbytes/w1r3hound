@@ -99,6 +99,11 @@ w1r3hound -t target.com -w /path/to/subdomains.txt -o bb_report
   -c, -concurrency   Parallel connections per protocol (default: 20)
   -p, -ports         Port range: top100, 1-1024, full (default: top100)
   -w, -wordlist      Path to subdomain wordlist file
+  -dir-wordlist      Path to a directory/file bruteforce wordlist (default: embedded list)
+  -dir-ext           Comma-separated extensions appended to each dirbrute word, e.g. .bak,.php,.zip,~
+  -resolver          Custom DNS resolver, e.g. 1.1.1.1 or 8.8.8.8:53 (default: system)
+  -resolvers         Path to a resolver list — opts subdomain brute-force/permutation into the
+                     raw-UDP DNS engine (rotates across resolvers, -rate governs DNS too)
   -v, -verbose       Debug output
   -passive           Passive mode (no traffic to target)
   -rate              Max requests/sec (0 = unlimited)

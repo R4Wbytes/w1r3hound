@@ -1,7 +1,7 @@
 package modules
 
 import (
-	"context"
+	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -44,8 +44,9 @@ func realZoneTransfer(domain, ns string, timeout time.Duration, cfg *core.Config
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(timeout * 3))
 
-	// Build an AXFR query (type 252)
-	query := buildDNSQuery(domain, 252)
+	// Build an AXFR query (type 252). Goes straight to the zone's authoritative
+	// nameserver, not a recursive resolver, so RD stays unset (recursive=false).
+	query := buildDNSQuery(domain, 252, false)
 
 	// TCP DNS: 2-byte length prefix
 	lenBuf := make([]byte, 2)
@@ -96,16 +97,31 @@ func realZoneTransfer(domain, ns string, timeout time.Duration, cfg *core.Config
 	return hostnames
 }
 
-// buildDNSQuery constructs a minimal DNS query packet.
-func buildDNSQuery(domain string, qtype uint16) []byte {
+// buildDNSQuery constructs a minimal DNS query packet. recursive sets the RD
+// (recursion desired) bit: AXFR goes straight to a zone's authoritative
+// nameserver and must leave it unset, while a query sent to a recursive
+// resolver (the raw-UDP brute-force engine — see dnsengine.go) needs it set,
+// or many public resolvers won't recurse and return an empty answer.
+func buildDNSQuery(domain string, qtype uint16, recursive bool) []byte {
 	var buf []byte
-	// Header: ID=0x1337, flags=0x0000 (standard query), QDCOUNT=1
-	buf = append(buf, 0x13, 0x37) // ID
-	buf = append(buf, 0x00, 0x00) // flags
-	buf = append(buf, 0x00, 0x01) // QDCOUNT
-	buf = append(buf, 0x00, 0x00) // ANCOUNT
-	buf = append(buf, 0x00, 0x00) // NSCOUNT
-	buf = append(buf, 0x00, 0x00) // ARCOUNT
+	// Header: random ID, flags (RD bit per `recursive`), QDCOUNT=1.
+	// The ID must be unpredictable: this query builder also backs the raw-UDP
+	// resolution path, where a fixed/guessable ID plus a non-randomized source
+	// port lets an off-path attacker spoof a matching response (cache/answer
+	// poisoning). Harmless over AXFR's TCP today, but this is the one place to
+	// fix it so the UDP path inherits it for free.
+	var idBuf [2]byte
+	_, _ = crand.Read(idBuf[:])
+	buf = append(buf, idBuf[0], idBuf[1]) // ID
+	flagsHi := byte(0x00)
+	if recursive {
+		flagsHi = 0x01 // RD bit
+	}
+	buf = append(buf, flagsHi, 0x00) // flags
+	buf = append(buf, 0x00, 0x01)    // QDCOUNT
+	buf = append(buf, 0x00, 0x00)    // ANCOUNT
+	buf = append(buf, 0x00, 0x00)    // NSCOUNT
+	buf = append(buf, 0x00, 0x00)    // ARCOUNT
 
 	// Question: QNAME
 	for _, label := range strings.Split(domain, ".") {
@@ -126,53 +142,62 @@ func buildDNSQuery(domain string, qtype uint16) []byte {
 	return buf
 }
 
+// readDNSName reads a (possibly compressed) domain name starting at pos in
+// msg, per RFC 1035 §4.1.4. Returns the dotted name and the offset to resume
+// sequential parsing from — right after the name, or right after the 2-byte
+// pointer if one was followed (never the jump target itself, so a caller
+// walking a fixed-format record right after the name doesn't get pulled off
+// into the middle of the message). jumps is capped at 10 to bound the walk
+// against a pointer cycle in a malicious/malformed message. Shared by the
+// AXFR name scraper (heuristic, walks every offset) and the typed answer
+// parser (structured, walks one RR at a time) below.
+func readDNSName(msg []byte, start int) (name string, next int) {
+	var labels []string
+	pos := start
+	endPos := -1 // position after the first compression pointer
+	jumps := 0
+	for pos < len(msg) {
+		l := int(msg[pos])
+		if l == 0 {
+			pos++
+			break
+		}
+		if l&0xc0 == 0xc0 {
+			if pos+1 >= len(msg) {
+				break
+			}
+			if endPos == -1 {
+				endPos = pos + 2 // save where to continue after this pointer
+			}
+			ptr := int(binary.BigEndian.Uint16(msg[pos:pos+2]) & 0x3fff)
+			if jumps > 10 || ptr >= len(msg) {
+				break
+			}
+			jumps++
+			pos = ptr
+			continue
+		}
+		if pos+1+l > len(msg) {
+			break
+		}
+		labels = append(labels, string(msg[pos+1:pos+1+l]))
+		pos += 1 + l
+	}
+	if endPos != -1 {
+		return strings.Join(labels, "."), endPos
+	}
+	return strings.Join(labels, "."), pos
+}
+
 // extractDNSNames pulls printable domain-name-like strings out of a DNS message.
 // This is a heuristic parser that walks the label sequences.
 func extractDNSNames(msg []byte, domain string) []string {
 	var names []string
 	i := 12 // skip header
 
-	readName := func(start int) (string, int) {
-		var labels []string
-		pos := start
-		endPos := -1 // position after the first compression pointer
-		jumps := 0
-		for pos < len(msg) {
-			l := int(msg[pos])
-			if l == 0 {
-				pos++
-				break
-			}
-			if l&0xc0 == 0xc0 {
-				if pos+1 >= len(msg) {
-					break
-				}
-				if endPos == -1 {
-					endPos = pos + 2 // save where to continue after this pointer
-				}
-				ptr := int(binary.BigEndian.Uint16(msg[pos:pos+2]) & 0x3fff)
-				if jumps > 10 || ptr >= len(msg) {
-					break
-				}
-				jumps++
-				pos = ptr
-				continue
-			}
-			if pos+1+l > len(msg) {
-				break
-			}
-			labels = append(labels, string(msg[pos+1:pos+1+l]))
-			pos += 1 + l
-		}
-		if endPos != -1 {
-			return strings.Join(labels, "."), endPos
-		}
-		return strings.Join(labels, "."), pos
-	}
-
 	// Walk through the message extracting names
 	for i < len(msg)-1 {
-		name, next := readName(i)
+		name, next := readDNSName(msg, i)
 		// Require a real label boundary: "x.example.com" or exactly "example.com",
 		// never "notexample.com" which merely shares the suffix. A malicious AXFR
 		// response could otherwise inject sibling-domain names into the shared
@@ -227,7 +252,9 @@ func EnumerateSRV(cfg *core.Config, log *core.Logger) []string {
 	domain := cfg.Domain
 	var found []string
 	for _, svc := range srvServices {
-		_, addrs, err := cfg.Resolver.LookupSRV(context.Background(), "", "", svc+"."+domain)
+		ctx, cancel := cfg.Context(cfg.Timeout)
+		_, addrs, err := cfg.Resolver.LookupSRV(ctx, "", "", svc+"."+domain)
+		cancel()
 		if err != nil || len(addrs) == 0 {
 			continue
 		}

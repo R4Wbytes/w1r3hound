@@ -61,7 +61,7 @@ func RunPassive(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	// silently failed (rate-limited), only rapiddns was visible — the rest
 	// were hidden behind log.Debug() and the report showed a misleading
 	// "Passive subdomain discovery: 95 unique from 1 sources".
-	sourcesAttempted := []string{"crt.sh", "hackertarget", "alienvault", "rapiddns", "anubis"}
+	sourcesAttempted := []string{"crt.sh", "hackertarget", "alienvault", "rapiddns", "anubis", "certspotter"}
 	sourcesFailed := make(map[string]bool)
 	var sourcesMu sync.Mutex
 	recordFailure := func(name string) {
@@ -235,6 +235,37 @@ func RunPassive(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			return
 		}
 		add("anubis", subs)
+	}()
+
+	// ── Source 6: Certspotter (SSLMate) ──
+	// Keyless CT log aggregator, separate from crt.sh's own dataset (different
+	// crawl cadence/coverage) — a second CT source catches certs the first
+	// misses. Unauthenticated requests are rate-limited by the API itself; a
+	// 429 just lands as a normal source failure like any other.
+	wg.Add(1)
+	go func() {
+		defer core.RecoverWorker(log, "passivesrc")
+		defer wg.Done()
+		url := fmt.Sprintf("https://api.certspotter.com/v1/issuances?domain=%s&include_subdomains=true&expand=dns_names", domain)
+		body, status, err := core.FetchBodyRL(client, url, cfg.UserAgent, cfg.RL)
+		if err != nil || status != 200 {
+			log.Warn("certspotter failed (status %d, err %v) — source omitted", status, err)
+			recordFailure("certspotter")
+			return
+		}
+		var issuances []struct {
+			DNSNames []string `json:"dns_names"`
+		}
+		if err := json.Unmarshal([]byte(body), &issuances); err != nil {
+			log.Warn("certspotter returned unparseable data — source omitted")
+			recordFailure("certspotter")
+			return
+		}
+		var subs []string
+		for _, iss := range issuances {
+			subs = append(subs, iss.DNSNames...)
+		}
+		add("certspotter", subs)
 	}()
 
 	wg.Wait()

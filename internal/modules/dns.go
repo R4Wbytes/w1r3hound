@@ -1,11 +1,10 @@
 package modules
 
 import (
-	"bufio"
 	"context"
+	crand "crypto/rand"
 	"fmt"
 	"net"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -18,33 +17,6 @@ import (
 //  Subdomain brute-force, zone transfer, reverse
 //  lookups, CNAME detection (subdomain takeover)
 // ──────────────────────────────────────────────
-
-// compoundTLDs is a minimal list of public suffixes with more than one label
-// (e.g. "co.uk", "com.au"). When normalising a subdomain to its apex, we must
-// strip at least two labels to avoid mistaking "example.co.uk" for an apex
-// when the target was "sub.example.co.uk". A full PSL list (Mozilla's) is ~1300
-// entries; this curated set covers the .com/.net/.org multi-label suffixes we
-// encounter on bug bounty work. Targets on unlisted compound TLDs (e.g. ".edu.tw",
-// ".gov.cn") will be normalised using a conservative fallback that over-strips
-// rather than under-strips, then verified by the downstream NS lookup. Add new
-// TLDs here when they show up in real engagements.
-var compoundTLDs = map[string]bool{
-	"co.uk": true, "co.jp": true, "co.kr": true, "co.in": true, "co.nz": true,
-	"co.za": true, "co.id": true, "co.il": true, "co.th": true, "co.ma": true,
-	"com.au": true, "com.br": true, "com.cn": true, "com.mx": true, "com.tw": true,
-	"com.tr": true, "com.ar": true, "com.sg": true, "com.hk": true, "com.my": true,
-	"com.ph": true, "com.ve": true, "com.co": true, "com.pe": true, "com.uy": true,
-	"com.ec": true, "com.eg": true, "com.pk": true, "com.ng": true, "com.sa": true,
-	"com.vn": true, "com.pl": true, "com.ru": true, "com.ua": true,
-	"org.uk": true, "ac.uk": true, "gov.uk": true, "net.au": true,
-	"edu.au": true, "gov.au": true,
-	"ne.jp": true, "or.jp": true, "ac.jp": true, "go.jp": true,
-	"web.id": true, "net.id": true, "sch.id": true,
-	"com.es": true, "nom.es": true,
-	"com.pt": true,
-	"co.ke":  true, "co.tz": true, "co.ug": true,
-	"co.cr": true, "ac.cr": true,
-}
 
 // extractApexDomain returns the apex (eTLD+1) of a domain. For "www.example.com"
 // it returns "example.com". For "api.staging.example.co.uk" it returns
@@ -77,22 +49,13 @@ func extractApexDomain(domain string) string {
 		// "example.com" or "localhost" — already an apex (or a single-label name).
 		return domain
 	}
-	// Decide how many labels belong to the public suffix.
-	// If the last 2 labels form a known compound TLD (e.g. "co.uk"),
-	// the eTLD is 2 labels and the apex is the last 3 labels
-	// ("example.co.uk"). Otherwise the eTLD is 1 label and the apex is the
-	// last 2 labels ("example.com").
-	suffixLabels := 2
-	if len(parts) >= 3 {
-		tld := parts[len(parts)-2] + "." + parts[len(parts)-1]
-		if compoundTLDs[tld] {
-			suffixLabels = 3
-		}
-	}
-	if len(parts) <= suffixLabels {
+	// The apex is the public suffix (eTLD, from the real Mozilla PSL — see
+	// psl.go) plus one label to its left ("example" in "example.co.uk").
+	apexLabels := publicSuffixLabelCount(parts) + 1
+	if len(parts) <= apexLabels {
 		return domain
 	}
-	return strings.Join(parts[len(parts)-suffixLabels:], ".")
+	return strings.Join(parts[len(parts)-apexLabels:], ".")
 }
 
 type DNSResult struct {
@@ -214,6 +177,16 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 	domain := cfg.Domain
 
+	// D3: a bare IP target has no DNS zone to enumerate. Without this guard,
+	// extractApexDomain("10.10.10.10") mis-parses it as "10.10" (it isn't a
+	// compound TLD) and every subsequent NS/MX/TXT/brute lookup queries that
+	// nonsense name — noisy, and semantically meaningless for IP-only targets
+	// (common in CTF/internal-range scans).
+	if ip := net.ParseIP(domain); ip != nil {
+		log.Info("Target %s is an IP — skipping DNS enumeration (no zone to enumerate)", domain)
+		return
+	}
+
 	// Fix #5 (2026-08-11): when the operator passes a subdomain
 	// (e.g. "-t www.<apex>"), DNS infrastructure queries must consult the
 	// apex. Subdomains either return no records (NS/MX for arbitrary
@@ -232,7 +205,9 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	// dropping it. Previously an empty Nameservers slice was indistinguishable
 	// from a lookup failure, producing false negatives like "DNS Enumeration:
 	// 0 NS, 0 MX" when the resolver was actually unreachable.)
-	nss, nsErr := cfg.Resolver.LookupNS(context.Background(), domain)
+	nsCtx, nsCancel := cfg.Context(cfg.Timeout)
+	nss, nsErr := cfg.Resolver.LookupNS(nsCtx, domain)
+	nsCancel()
 	if nsErr != nil {
 		log.Warn("NS lookup failed: %v", nsErr)
 	}
@@ -243,7 +218,9 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	}
 
 	// 2. MX records (FIX #3: log error)
-	mxs, mxErr := cfg.Resolver.LookupMX(context.Background(), domain)
+	mxCtx, mxCancel := cfg.Context(cfg.Timeout)
+	mxs, mxErr := cfg.Resolver.LookupMX(mxCtx, domain)
+	mxCancel()
 	if mxErr != nil {
 		log.Warn("MX lookup failed: %v", mxErr)
 	}
@@ -254,7 +231,9 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	}
 
 	// 3. TXT records — SPF, DMARC, DKIM, verification tokens (FIX #3: log error)
-	txts, txtErr := cfg.Resolver.LookupTXT(context.Background(), domain)
+	txtCtx, txtCancel := cfg.Context(cfg.Timeout)
+	txts, txtErr := cfg.Resolver.LookupTXT(txtCtx, domain)
+	txtCancel()
 	if txtErr != nil {
 		log.Warn("TXT lookup failed: %v", txtErr)
 	}
@@ -271,7 +250,9 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	// the TXT record set, causing downstream consumers (jq parsers, human readers)
 	// to miscount TXT records and treat DMARC as an apex TXT entry. Now DMARC is
 	// stored ONLY in DMARCPolicy.
-	dmarcTxts, _ := cfg.Resolver.LookupTXT(context.Background(), "_dmarc."+domain)
+	dmarcCtx, dmarcCancel := cfg.Context(cfg.Timeout)
+	dmarcTxts, _ := cfg.Resolver.LookupTXT(dmarcCtx, "_dmarc."+domain)
+	dmarcCancel()
 	for _, t := range dmarcTxts {
 		result.DMARCPolicy = t
 		log.Info("DMARC: %s", truncate(t, 120))
@@ -330,8 +311,10 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		log.Info("Found %d SRV records exposing internal services", len(result.SRVRecords))
 	}
 
-	// 5. Wildcard detection (single DNS query for both detection and IP collection)
-	wildcardIPs := getWildcardIPs(cfg.Resolver, domain)
+	// 5. Wildcard detection (multi-probe union — see wildcardSet)
+	wcCtx, wcCancel := cfg.Context(cfg.Timeout)
+	wildcardIPs := wildcardSet(wcCtx, cfg.Resolver, domain)
+	wcCancel()
 	result.WildcardDetect = len(wildcardIPs) > 0
 	if result.WildcardDetect {
 		log.Warn("Wildcard DNS detected — subdomain brute results may contain false positives")
@@ -339,7 +322,7 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	}
 
 	// 6. Subdomain brute-force
-	wordlist := loadSubdomainWordlist(cfg.Wordlist)
+	wordlist := core.ReadLines(cfg.Wordlist)
 	if len(wordlist) == 0 {
 		wordlist = defaultSubdomains
 	}
@@ -352,8 +335,9 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		found = make(map[string]SubdomainEntry)
 	)
 
-	// Use system resolver by default (works in internal/CTF networks)
-	resolver := cfg.Resolver
+	// Uses the raw-UDP resolver pool when -resolvers was supplied, otherwise
+	// the system/-resolver stdlib resolver as before (see selectResolver).
+	resolver := selectResolver(cfg)
 
 	for _, sub := range wordlist {
 		fqdn := sub + "." + domain
@@ -364,7 +348,7 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+			ctx, cancel := cfg.Context(cfg.Timeout)
 			defer cancel()
 
 			ips, err := resolver.LookupHost(ctx, fqdn)
@@ -466,23 +450,45 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 // ── helpers ──
 
-func detectWildcard(resolver *net.Resolver, domain string) bool {
-	randomSub := "W1r3hound-wildcard-probe-xq7k9m." + domain
-	ips, err := resolver.LookupHost(context.Background(), randomSub)
-	return err == nil && len(ips) > 0
+// wildcardProbeCount is how many randomly-labelled lookups wildcardSet fires
+// per call. A single probe only sees one slice of a round-robin wildcard pool
+// (common on CDNs/load balancers), so hits against the un-sampled addresses
+// slip past allIPsMatch as false positives. Multiple probes, unioned, capture
+// more of the pool.
+const wildcardProbeCount = 4
+
+// wildcardSet detects a wildcard DNS record by resolving several random
+// labels under domain and returns the union of every IP seen — the set to
+// filter subsequent brute-force hits against. A previous version used a
+// single, hardcoded label (predictable despite the "random" name, and a
+// single probe), which both an attacker could special-case and a
+// round-robin wildcard could evade. An empty (non-nil-checked-by-caller)
+// result means no wildcard was detected.
+func wildcardSet(ctx context.Context, resolver *net.Resolver, domain string) map[string]bool {
+	set := make(map[string]bool)
+	for i := 0; i < wildcardProbeCount; i++ {
+		ips, err := resolver.LookupHost(ctx, randLabel(12)+"."+domain)
+		if err != nil {
+			continue
+		}
+		for _, ip := range ips {
+			set[ip] = true
+		}
+	}
+	return set
 }
 
-func getWildcardIPs(resolver *net.Resolver, domain string) map[string]bool {
-	randomSub := "W1r3hound-wildcard-probe-xq7k9m." + domain
-	ips, err := resolver.LookupHost(context.Background(), randomSub)
-	if err != nil {
-		return nil
+// randLabel returns an n-character random lowercase-alphanumeric DNS label,
+// unpredictable per run (crypto/rand) so a target can't special-case a fixed
+// probe name to defeat wildcard detection.
+func randLabel(n int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, n)
+	_, _ = crand.Read(b)
+	for i := range b {
+		b[i] = alphabet[int(b[i])%len(alphabet)]
 	}
-	m := make(map[string]bool)
-	for _, ip := range ips {
-		m[ip] = true
-	}
-	return m
+	return "wh-" + string(b)
 }
 
 func allIPsMatch(ips []string, wildcardIPs map[string]bool) bool {
@@ -503,26 +509,6 @@ func mapKeys(m map[string]bool) []string {
 		keys = append(keys, k)
 	}
 	return keys
-}
-
-func loadSubdomainWordlist(path string) []string {
-	if path == "" {
-		return nil
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	var subs []string
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line != "" && !strings.HasPrefix(line, "#") {
-			subs = append(subs, line)
-		}
-	}
-	return subs
 }
 
 func truncate(s string, n int) string {
@@ -570,7 +556,9 @@ func lookupApexDMARC(target string, cfg *core.Config, log *core.Logger) string {
 	// (e.g. sub.example.co.uk → try example.co.uk, then co.uk)
 	for i := 1; i < len(parts)-1; i++ {
 		candidate := strings.Join(parts[i:], ".")
-		recs, err := cfg.Resolver.LookupTXT(context.Background(), "_dmarc."+candidate)
+		ctx, cancel := cfg.Context(cfg.Timeout)
+		recs, err := cfg.Resolver.LookupTXT(ctx, "_dmarc."+candidate)
+		cancel()
 		if err != nil || len(recs) == 0 {
 			continue
 		}

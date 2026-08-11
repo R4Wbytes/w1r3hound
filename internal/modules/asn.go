@@ -1,7 +1,6 @@
 package modules
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -43,7 +42,9 @@ func RunASN(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	domain := cfg.Domain
 
 	// 1. Resolve the target to an IP
-	ips, err := cfg.Resolver.LookupHost(context.Background(), domain)
+	ctx, cancel := cfg.Context(cfg.Timeout)
+	defer cancel()
+	ips, err := cfg.Resolver.LookupHost(ctx, domain)
 	if err != nil || len(ips) == 0 {
 		log.Error("Could not resolve %s: %v", domain, err)
 		return

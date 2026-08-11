@@ -101,7 +101,7 @@ func TestIsPrintableDNS(t *testing.T) {
 
 // TestBuildDNSQuery ensures the AXFR query packet has correct structure.
 func TestBuildDNSQuery(t *testing.T) {
-	q := buildDNSQuery("example.com", 252)
+	q := buildDNSQuery("example.com", 252, false)
 	// Header is 12 bytes; QNAME for "example.com" = 1+7 + 1+3 + 1 (root) = 13; +4 for type/class
 	wantLen := 12 + 13 + 4
 	if len(q) != wantLen {

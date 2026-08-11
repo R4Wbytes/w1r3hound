@@ -100,7 +100,7 @@ const banner = `
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡴⠋⣀⣽⣿⡀⠈⠛⠀⠀⠀⠀⣀⣤⣾⡿⣿⡿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⢴⠿⠒⠋⠉⠀⠘⡻⢦⡤⠴⠶⠶⡛⡛⢉⣡⣞⡵⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 
-   [ wiretap-grade offensive recon ]   w1r3hound v1.0.4 · OWASP WSTG · BBP · CTF
+   [ wiretap-grade offensive recon ]   w1r3hound v1.0.5 · OWASP WSTG · BBP · CTF
 `
 
 const helpFooter = `
@@ -160,6 +160,8 @@ func main() {
 	flag.BoolVar(&cfg.Verbose, "v", false, "Verbose (shorthand)")
 	flag.StringVar(&cfg.Wordlist, "wordlist", "", "Path to subdomain wordlist")
 	flag.StringVar(&cfg.Wordlist, "w", "", "Wordlist (shorthand)")
+	flag.StringVar(&cfg.DirWordlist, "dir-wordlist", "", "Path to a directory/file bruteforce wordlist (default: embedded list)")
+	flag.StringVar(&cfg.DirExtensions, "dir-ext", "", "Comma-separated extensions appended to each dirbrute word, e.g. .bak,.php,.zip,~")
 	flag.StringVar(&cfg.Ports, "ports", "top100", "Port range: top100, 1-1024, full")
 	flag.StringVar(&cfg.Ports, "p", "top100", "Ports (shorthand)")
 	flag.IntVar(&cfg.RateLimit, "rate", 0, "Max requests/sec (0 = unlimited)")
@@ -167,6 +169,7 @@ func main() {
 	flag.StringVar(&cfg.UserAgent, "ua", cfg.UserAgent, "Custom User-Agent")
 	flag.BoolVar(&cfg.SkipSSLCheck, "skip-tls-verify", true, "Skip TLS certificate verification (recon often targets broken/self-signed TLS)")
 	resolverAddr := flag.String("resolver", "", "Custom DNS resolver, e.g. 1.1.1.1 or 8.8.8.8:53 (default: system)")
+	resolversFile := flag.String("resolvers", "", "Path to a resolver list (one ip[:port] per line) — opts subdomain brute-force/permutation into the raw-UDP engine, rotating across the list instead of the single system/-resolver resolver; -rate then governs DNS too")
 	flag.IntVar(&cfg.WaybackLimit, "wayback-limit", cfg.WaybackLimit, "Max URLs to pull from the Wayback CDX API")
 	flag.IntVar(&cfg.CrawlMaxPages, "crawl-pages", cfg.CrawlMaxPages, "Max pages for the crawler")
 	flag.IntVar(&cfg.MaxJSFiles, "js-files", cfg.MaxJSFiles, "Max JavaScript files to analyse")
@@ -262,6 +265,15 @@ func main() {
 	rl := core.NewRateLimiter(cfg.RateLimit)
 	cfg.RL = rl
 	cfg.Resolver = core.NewResolver(*resolverAddr, cfg.Timeout)
+	if *resolversFile != "" {
+		resolvers := core.ReadLines(*resolversFile)
+		if len(resolvers) == 0 {
+			log.Warn("-resolvers %q is missing or empty — falling back to the stdlib resolver", *resolversFile)
+		} else {
+			cfg.Resolvers = resolvers
+			log.Info("Raw-UDP DNS engine enabled: %d resolver(s) from %s", len(resolvers), *resolversFile)
+		}
+	}
 	defer func() {
 		if rl != nil {
 			rl.Stop()
