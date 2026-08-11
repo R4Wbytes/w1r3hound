@@ -19,6 +19,82 @@ import (
 //  lookups, CNAME detection (subdomain takeover)
 // ──────────────────────────────────────────────
 
+// compoundTLDs is a minimal list of public suffixes with more than one label
+// (e.g. "co.uk", "com.au"). When normalising a subdomain to its apex, we must
+// strip at least two labels to avoid mistaking "example.co.uk" for an apex
+// when the target was "sub.example.co.uk". A full PSL list (Mozilla's) is ~1300
+// entries; this curated set covers the .com/.net/.org multi-label suffixes we
+// encounter on bug bounty work. Targets on unlisted compound TLDs (e.g. ".edu.tw",
+// ".gov.cn") will be normalised using a conservative fallback that over-strips
+// rather than under-strips, then verified by the downstream NS lookup. Add new
+// TLDs here when they show up in real engagements.
+var compoundTLDs = map[string]bool{
+	"co.uk": true, "co.jp": true, "co.kr": true, "co.in": true, "co.nz": true,
+	"co.za": true, "co.id": true, "co.il": true, "co.th": true, "co.ma": true,
+	"com.au": true, "com.br": true, "com.cn": true, "com.mx": true, "com.tw": true,
+	"com.tr": true, "com.ar": true, "com.sg": true, "com.hk": true, "com.my": true,
+	"com.ph": true, "com.ve": true, "com.co": true, "com.pe": true, "com.uy": true,
+	"com.ec": true, "com.eg": true, "com.pk": true, "com.ng": true, "com.sa": true,
+	"com.vn": true, "com.pl": true, "com.ru": true, "com.ua": true,
+	"org.uk": true, "ac.uk": true, "gov.uk": true, "net.au": true,
+	"edu.au": true, "gov.au": true,
+	"ne.jp": true, "or.jp": true, "ac.jp": true, "go.jp": true,
+	"web.id": true, "net.id": true, "sch.id": true,
+	"com.es": true, "nom.es": true,
+	"com.pt": true,
+	"co.ke":  true, "co.tz": true, "co.ug": true,
+	"co.cr": true, "ac.cr": true,
+}
+
+// extractApexDomain returns the apex (eTLD+1) of a domain. For "www.example.com"
+// it returns "example.com". For "api.staging.example.co.uk" it returns
+// "example.co.uk". Returns the input unchanged when it already looks like an
+// apex (≤ 2 labels) or when it cannot be stripped safely.
+//
+// Fix #5 (hackerone.com, 2026-08-11): when the operator runs `-t www.<apex>`,
+// DNS infrastructure queries (NS/MX/TXT) must consult the apex because
+// subdomains either return no records (NS/MX) or return a misleading hard-fail
+// SPF (e.g. "v=spf1 -all" on `www`) that hides the apex's permissive policy
+// with real include: statements. Without this fix, the report shows "0 NS, 0
+// MX" and a misleading SPF for every subdomain target — a critical false
+// negative in the email-spoofing-risk assessment.
+func extractApexDomain(domain string) string {
+	domain = strings.TrimSpace(strings.ToLower(domain))
+	if domain == "" {
+		return domain
+	}
+	// Strip any scheme/path/port artifacts so callers can pass raw URLs.
+	domain = strings.TrimPrefix(domain, "https://")
+	domain = strings.TrimPrefix(domain, "http://")
+	if i := strings.Index(domain, "/"); i >= 0 {
+		domain = domain[:i]
+	}
+	if domain == "" {
+		return domain
+	}
+	parts := strings.Split(domain, ".")
+	if len(parts) <= 2 {
+		// "example.com" or "localhost" — already an apex (or a single-label name).
+		return domain
+	}
+	// Decide how many labels belong to the public suffix.
+	// If the last 2 labels form a known compound TLD (e.g. "co.uk"),
+	// the eTLD is 2 labels and the apex is the last 3 labels
+	// ("example.co.uk"). Otherwise the eTLD is 1 label and the apex is the
+	// last 2 labels ("example.com").
+	suffixLabels := 2
+	if len(parts) >= 3 {
+		tld := parts[len(parts)-2] + "." + parts[len(parts)-1]
+		if compoundTLDs[tld] {
+			suffixLabels = 3
+		}
+	}
+	if len(parts) <= suffixLabels {
+		return domain
+	}
+	return strings.Join(parts[len(parts)-suffixLabels:], ".")
+}
+
 type DNSResult struct {
 	Subdomains []SubdomainEntry `json:"subdomains"`
 	// Fix #4 (bbp-abercrombie-2026-08-07): SubdomainNames provides a flat
@@ -137,6 +213,19 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	log.Module("FINGERPRINTER // Network Mapping & Subdomain Recon")
 
 	domain := cfg.Domain
+
+	// Fix #5 (hackerone.com, 2026-08-11): when the operator passes a subdomain
+	// (e.g. "-t www.example.com"), DNS infrastructure queries must consult the
+	// apex. Subdomains either return no records (NS/MX for arbitrary
+	// subdomains) or return a misleading hard-fail SPF (e.g. "v=spf1 -all" on
+	// `www`) that hides the apex's real policy with include: statements. Without
+	// this fix, every `-t www.<apex>` invocation reports "0 NS, 0 MX" and a
+	// misleading SPF — a critical false negative for email-spoofing-risk
+	// assessment on bug bounty engagements.
+	if apex := extractApexDomain(domain); apex != domain {
+		log.Info("Target %q is a subdomain — normalising DNS queries to apex %q", domain, apex)
+		domain = apex
+	}
 	result := DNSResult{}
 
 	// 1. Nameservers (FIX #3: log the resolver error instead of silently

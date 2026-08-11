@@ -40,6 +40,17 @@ func RunPassive(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	domain := cfg.Domain
 	client := core.NewHTTPClient(cfg)
 
+	// Fix #5 (hackerone.com, 2026-08-11): normalise subdomain targets to the
+	// apex for passive DNS sources. crt.sh, hackertarget, rapiddns, anubis and
+	// OTX all accept apex domains and return subdomains OF that apex. Filtering
+	// the results against a subdomain target (e.g. `www.hackerone.com`)
+	// discards `api.hackerone.com` because it doesn't end in `.www.hackerone.com`
+	// — producing "1 unique subdomain" when the apex has 10+.
+	if apex := extractApexDomain(domain); apex != domain {
+		log.Info("Passive source target %q is a subdomain — normalising to apex %q for query and result matching", domain, apex)
+		domain = apex
+	}
+
 	result := PassiveResult{BySource: make(map[string]int)}
 	found := make(map[string]bool)
 	var mu sync.Mutex

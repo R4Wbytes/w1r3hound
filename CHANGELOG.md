@@ -5,6 +5,38 @@ follows [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) where
 applicable.
 
+## [1.0.4] — 2026-08-11
+
+### False-Negative Fixes (validated against hackerone.com)
+
+- **Subdomain target apex normalisation** (`internal/modules/dns.go`,
+  `extractApexDomain`; `internal/modules/passive.go`): when the operator runs
+  `-t www.<apex>` (a very common pattern when copy-pasting the URL from a
+  browser address bar), the DNS module now normalises the target to its apex
+  (eTLD+1) before issuing NS, MX, TXT, and subdomain brute-force queries.
+  Previously every DNS infrastructure query was issued against the subdomain
+  itself, which has no NS/MX records and either returns no SPF or returns a
+  misleading hard-fail SPF (e.g. `v=spf1 -all` on `www.hackerone.com`) that
+  hides the apex's real policy with `include:` statements. The passive source
+  filter (`add` in passive.go) was affected because it filtered results against
+  the subdomain (`endsWith(".www.hackerone.com")` discards
+  `api.hackerone.com`), producing "1 unique subdomain" when the apex had 10+.
+  Verified against hackerone.com: passive subdomains 1 → 21
+  (hackertarget 10, rapiddns 11); NS 0 → 2; MX 0 → 5; SPF
+  `v=spf1 -all` → `v=spf1 include:_spf.google.com include:amazonses.com
+  include:mail.zendesk.com include:spf.mail.intercom.io include:mktomail.com
+  include:registrarmail.net -all`. The operator-facing log emits
+  `▸ Target "www.hackerone.com" is a subdomain — normalising DNS queries to
+  apex "hackerone.com"` so the auto-normalisation is never silent.
+
+### Compatibility
+
+- All 4 packages pass `go test -race -count=1`.
+- `gofmt -l .` and `go vet ./...` clean.
+- No CLI flag changes; no API breakage; no report-schema changes
+- `extractApexDomain` is an internal helper — not exported, so it does not
+  affect downstream consumers.
+
 ## [1.0.3] — 2026-08-11
 
 ### False-Positive Fixes (validated against nuevageneracion.ed.cr,
