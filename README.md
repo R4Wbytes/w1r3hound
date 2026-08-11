@@ -29,29 +29,6 @@ enumeration, and HTTP-signature subdomain takeover fingerprinting.
 Zero dependencies. Single binary. Cross-platform. One scan to profile
 everything.
 
-## What's new in v1.0.3
-
-v1.0.3 is a stability release that closes four bug-hunt findings from
-the v1.0.2 audit against three authorized targets (Wix-hosted + Apache/PHP):
-
-- **Cloud bucket false ownership eliminated** — 9 false-positive HIGH
-  findings per target are now suppressed when the bucket name is a known
-  generic (`www`, `www-staging`, `www-cdn`, etc.) because those names
-  resolve to buckets owned by other parties (Google project 868530998679,
-  DO owner 359009, etc.). The buckets are still listed in the INFO
-  finding for awareness.
-- **Source map detection now verifies HTTP 200** — inline
-  `//# sourceMappingURL=` references that point to non-existent `.map`
-  files (a common pattern in CMS themes) no longer raise MEDIUM findings.
-- **Wayback Machine fallback to `matchType=domain`** — targets behind
-  CDNs (Wix, Cloudflare) now report historical snapshots instead of
-  "0 URLs" (Lasalle: 0 → 10782 URLs; Kerala: 5000 → 100001 URLs).
-- **DNS module logs resolver errors** — `LookupNS`/`MX`/`TXT` failures
-  are no longer silently swallowed; the operator sees the underlying
-  error in the log.
-
-Full details in [CHANGELOG.md](CHANGELOG.md).
-
 ## Installation
 
 ```bash
