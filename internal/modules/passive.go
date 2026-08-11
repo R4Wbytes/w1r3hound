@@ -24,7 +24,7 @@ type PassiveResult struct {
 	Subdomains  []string       `json:"subdomains"`
 	BySource    map[string]int `json:"count_by_source"`
 	TotalUnique int            `json:"total_unique"`
-	// Fix #2 (bbp-abercrombie-2026-08-07): coverage metadata so users can see
+	// Fix #2 (2026-08-07): coverage metadata so users can see
 	// how many sources were attempted and how many failed. The original report
 	// only showed counts, hiding that 4/5 sources had silently failed.
 	SourcesAttempted  []string `json:"sources_attempted"`
@@ -40,12 +40,12 @@ func RunPassive(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	domain := cfg.Domain
 	client := core.NewHTTPClient(cfg)
 
-	// Fix #5 (hackerone.com, 2026-08-11): normalise subdomain targets to the
+	// Fix #5 (2026-08-11): normalise subdomain targets to the
 	// apex for passive DNS sources. crt.sh, hackertarget, rapiddns, anubis and
 	// OTX all accept apex domains and return subdomains OF that apex. Filtering
-	// the results against a subdomain target (e.g. `www.hackerone.com`)
-	// discards `api.hackerone.com` because it doesn't end in `.www.hackerone.com`
-	// — producing "1 unique subdomain" when the apex has 10+.
+	// the results against a subdomain target (e.g. `www.<apex>`)
+	// discards real subdomains because they don't end in `.www.<apex>` —
+	// producing "1 unique subdomain" when the apex has 10+.
 	if apex := extractApexDomain(domain); apex != domain {
 		log.Info("Passive source target %q is a subdomain — normalising to apex %q for query and result matching", domain, apex)
 		domain = apex
@@ -55,7 +55,7 @@ func RunPassive(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	found := make(map[string]bool)
 	var mu sync.Mutex
 
-	// Fix #2 (bbp-abercrombie-2026-08-07): track attempted/successful/failed
+	// Fix #2 (2026-08-07): track attempted/successful/failed
 	// sources so the report shows coverage gaps and the user can decide to
 	// re-run with API keys, etc. Previously, when crt.sh + 4 other sources
 	// silently failed (rate-limited), only rapiddns was visible — the rest
@@ -246,7 +246,7 @@ func RunPassive(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	sort.Strings(result.Subdomains)
 	result.TotalUnique = len(result.Subdomains)
 
-	// Fix #2 (bbp-abercrombie-2026-08-07): record coverage metadata.
+	// Fix #2 (2026-08-07): record coverage metadata.
 	result.SourcesAttempted = sourcesAttempted
 	for _, name := range sourcesAttempted {
 		if sourcesFailed[name] {

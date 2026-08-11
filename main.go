@@ -100,7 +100,7 @@ const banner = `
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡴⠋⣀⣽⣿⡀⠈⠛⠀⠀⠀⠀⣀⣤⣾⡿⣿⡿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⢴⠿⠒⠋⠉⠀⠘⡻⢦⡤⠴⠶⠶⡛⡛⢉⣡⣞⡵⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 
-   [ wiretap-grade offensive recon ]   w1r3hound v1.0.3 · OWASP WSTG · BBP · CTF
+   [ wiretap-grade offensive recon ]   w1r3hound v1.0.4 · OWASP WSTG · BBP · CTF
 `
 
 const helpFooter = `
@@ -233,7 +233,7 @@ func main() {
 	}
 
 	cfg.Domain = extractDomain(cfg.Target)
-	// Fix #3 (bbp-abercrombie-2026-08-07): seed RootDomains with the extracted
+	// Fix #3 (2026-08-07): seed RootDomains with the extracted
 	// apex so isSubdomain() helpers can identify subdomains of the target.
 	cfg.RootDomains = []string{cfg.Domain}
 

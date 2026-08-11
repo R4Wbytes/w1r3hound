@@ -339,7 +339,7 @@ func RunHeaders(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	}
 
 	// ── 3. Cookie Analysis ──
-	// Fix #7 (bbp-abercrombie-2026-08-07): Cookies are now deduplicated by
+	// Fix #7 (2026-08-07): Cookies are now deduplicated by
 	// (name, host) before being added to the result and the finding list. The
 	// original code appended a new Finding for every Set-Cookie header on every
 	// URL the crawler visited, which produced duplicate MEDIUM findings

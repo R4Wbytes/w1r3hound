@@ -53,7 +53,7 @@ type Config struct {
 	// helpers like isSubdomain() to suppress duplicate findings on subdomains
 	// that inherit behaviour from the apex (e.g. DMARC, SPF, MX). When empty,
 	// helpers fall back to label-count heuristics.
-	// Fix #3 (bbp-abercrombie-2026-08-07).
+	// Fix #3 (2026-08-07).
 	RootDomains []string
 
 	// ── Shared context (data feedback between modules) ──

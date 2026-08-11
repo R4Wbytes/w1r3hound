@@ -16,3 +16,6 @@ w1r3hound_*.md
 # OS / editor cruft
 .DS_Store
 *.swp
+
+# Hermes agent local state (verification recipes, environment cache)
+/.hermes/

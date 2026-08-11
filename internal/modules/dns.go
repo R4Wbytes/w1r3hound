@@ -51,7 +51,7 @@ var compoundTLDs = map[string]bool{
 // "example.co.uk". Returns the input unchanged when it already looks like an
 // apex (≤ 2 labels) or when it cannot be stripped safely.
 //
-// Fix #5 (hackerone.com, 2026-08-11): when the operator runs `-t www.<apex>`,
+// Fix #5 (2026-08-11): when the operator runs `-t www.<apex>`,
 // DNS infrastructure queries (NS/MX/TXT) must consult the apex because
 // subdomains either return no records (NS/MX) or return a misleading hard-fail
 // SPF (e.g. "v=spf1 -all" on `www`) that hides the apex's permissive policy
@@ -97,7 +97,7 @@ func extractApexDomain(domain string) string {
 
 type DNSResult struct {
 	Subdomains []SubdomainEntry `json:"subdomains"`
-	// Fix #4 (bbp-abercrombie-2026-08-07): SubdomainNames provides a flat
+	// Fix #4 (2026-08-07): SubdomainNames provides a flat
 	// []string projection of the names in Subdomains. The two field types
 	// (struct vs string) used to be conflated by downstream consumers (e.g.
 	// `jq '.subdomains[]?'` returned keys/values from the struct, polluting
@@ -214,8 +214,8 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 	domain := cfg.Domain
 
-	// Fix #5 (hackerone.com, 2026-08-11): when the operator passes a subdomain
-	// (e.g. "-t www.example.com"), DNS infrastructure queries must consult the
+	// Fix #5 (2026-08-11): when the operator passes a subdomain
+	// (e.g. "-t www.<apex>"), DNS infrastructure queries must consult the
 	// apex. Subdomains either return no records (NS/MX for arbitrary
 	// subdomains) or return a misleading hard-fail SPF (e.g. "v=spf1 -all" on
 	// `www`) that hides the apex's real policy with include: statements. Without
@@ -266,7 +266,7 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		}
 	}
 	// DMARC
-	// Fix #1 (bbp-abercrombie-2026-08-07): DMARC record lives at _dmarc.<domain>,
+	// Fix #1 (2026-08-07): DMARC record lives at _dmarc.<domain>,
 	// not at the apex. Appending it to TXTRecords with a "DMARC: " prefix polluted
 	// the TXT record set, causing downstream consumers (jq parsers, human readers)
 	// to miscount TXT records and treat DMARC as an apex TXT entry. Now DMARC is
@@ -277,11 +277,11 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		log.Info("DMARC: %s", truncate(t, 120))
 	}
 	// Flag missing DMARC (email spoofing risk)
-	// Fix #3 (bbp-abercrombie-2026-08-07): Subdomains inherit DMARC policy from
-	// the apex per RFC 7489 §6.3. Reporting "No DMARC" on every subdomain
-	// produces massive false positives (e.g. corporate.abercrombie.com was
-	// flagged LOW despite abercrombie.com having p=reject). When the target is a
-	// subdomain, fall back to the apex's DMARC before flagging.
+	// Fix #3 (2026-08-07): Subdomains inherit DMARC policy from the apex
+	// per RFC 7489 §6.3. Reporting "No DMARC" on every subdomain produces
+	// massive false positives (e.g. a corporate subdomain was flagged LOW
+	// despite the apex having p=reject). When the target is a subdomain,
+	// fall back to the apex's DMARC before flagging.
 	if result.DMARCPolicy == "" {
 		apexDMARC := lookupApexDMARC(domain, cfg, log)
 		if apexDMARC != "" {
@@ -425,7 +425,7 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		return result.Subdomains[i].Name < result.Subdomains[j].Name
 	})
 
-	// Fix #4 (bbp-abercrombie-2026-08-07): populate SubdomainNames with the
+	// Fix #4 (2026-08-07): populate SubdomainNames with the
 	// flat []string projection so downstream jq/grep consumers get clean FQDNs
 	// without having to dig into the struct.
 	for _, s := range result.Subdomains {
@@ -535,7 +535,7 @@ func truncate(s string, n int) string {
 // isSubdomain returns true if `target` is a subdomain of any of the root
 // domains configured for the scan. Used to suppress subdomain findings that
 // would otherwise be duplicated/inherited from the apex (e.g. DMARC, SPF).
-// Fix #3 (bbp-abercrombie-2026-08-07).
+// Fix #3 (2026-08-07).
 func isSubdomain(target string, roots []string) bool {
 	if len(roots) == 0 {
 		// No roots configured — treat anything with a dot as a subdomain.
@@ -560,7 +560,7 @@ func isSubdomain(target string, roots []string) bool {
 // lookupApexDMARC looks up the DMARC policy at the apex domain. The apex is
 // derived by stripping the leftmost label from the target. If the target is
 // already the apex, it returns "" so the caller knows not to recurse.
-// Fix #3 (bbp-abercrombie-2026-08-07).
+// Fix #3 (2026-08-07).
 func lookupApexDMARC(target string, cfg *core.Config, log *core.Logger) string {
 	parts := strings.Split(target, ".")
 	if len(parts) < 3 {

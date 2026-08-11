@@ -63,7 +63,7 @@ var secretPatterns = []struct {
 	{"DB Connection String", regexp.MustCompile(`(?i)(mongodb|postgres|mysql|redis|mssql|jdbc)://[^\s'"<>]{10,200}`)},
 	{"Generic API Key", regexp.MustCompile(`(?i)(api[_-]?key|apikey|api[_-]?secret)\s*[:=]\s*['"]?([A-Za-z0-9_-]{16,64})['"]?`)},
 	{"Generic Secret", regexp.MustCompile(`(?i)(secret[_-]?key|client[_-]?secret|app[_-]?secret)\s*[:=]\s*['"]?([A-Za-z0-9_-]{16,64})['"]?`)},
-	// Fix #6 (bbp-abercrombie-2026-08-07): The original regex
+	// Fix #6 (2026-08-07): The original regex
 	//   (?i)(password|passwd|pwd)\s*[:=]\s*['"]([^'"]{4,40})['"]
 	// matched translation keys in minified JavaScript (e.g. "FORGOT_PASSWORD"
 	// is often split into "FORGOT_PASS" + "WORD" by minifiers, or appears as
@@ -353,7 +353,7 @@ func scanForSecrets(result *ContentResult, text, source string, log *core.Logger
 				continue
 			}
 
-			// Fix #6 (bbp-abercrombie-2026-08-07): drop false-positive
+			// Fix #6 (2026-08-07): drop false-positive
 			// translation keys / framework constants that the regex matched.
 			// Minified JS frequently concatenates i18n keys like
 			// "FORGOT_PASSWORD" into "FORGOT_PASS" + "WORD" via
@@ -423,7 +423,7 @@ func isSafeMatch(s string) bool {
 // like a translation key / framework constant than a real credential. Used by
 // the secret scanner to suppress noisy false positives flagged during BBP
 // recon (e.g. "INVALID_EMAIL_OR_PASS***ord\"").
-// Fix #6 (bbp-abercrombie-2026-08-07).
+// Fix #6 (2026-08-07).
 func isLikelyI18nKey(s string) bool {
 	lower := strings.ToLower(s)
 
@@ -489,7 +489,7 @@ func hasDigit(s string) bool {
 // cleanSourceMapURL trims trailing delimiters (`;`, `,`, `"`, `'`, `)`, `}`)
 // that the sourceMapPattern regex captures when a JS file ends with
 // `//# sourceMappingURL=...;` or has a trailing comma/quote after the URL.
-// Fix #8 (bbp-abercrombie-2026-08-07).
+// Fix #8 (2026-08-07).
 func cleanSourceMapURL(s string) string {
 	for {
 		trimmed := false

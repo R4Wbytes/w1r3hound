@@ -121,18 +121,18 @@ func TestBuildDNSQuery(t *testing.T) {
 // TestIsSameDomainURL verifies JS endpoint domain filtering (BUG 7 fix):
 // third-party URLs (Sentry, Wistia) are rejected, same-domain kept.
 func TestIsSameDomainURL(t *testing.T) {
-	domain := "hackerone.com"
+	domain := "example.com"
 	cases := []struct {
 		url  string
 		want bool
 	}{
-		{"https://docs.hackerone.com/api", true},
-		{"https://www.hackerone.com/graphql", true},
-		{"//api.hackerone.com/v1", true},
+		{"https://docs.example.com/api", true},
+		{"https://www.example.com/graphql", true},
+		{"//api.example.com/v1", true},
 		{"https://browser.sentry-cdn.com/bundle.js", false},
 		{"https://distillery.wistia.com/x", false},
-		{"https://a3591ba5@o4505.ingest.us.sentry.io/123", false},
-		{"https://evilhackerone.com/x", false}, // suffix trick
+		{"https://***@o4505.ingest.us.sentry.io/123", false},
+		{"https://evil-example.com/x", false}, // suffix trick
 	}
 	for _, c := range cases {
 		if got := isSameDomainURL(c.url, domain); got != c.want {

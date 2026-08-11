@@ -7,7 +7,8 @@ applicable.
 
 ## [1.0.4] — 2026-08-11
 
-### False-Negative Fixes (validated against hackerone.com)
+### False-Negative Fixes (validated against an authorized
+### CDN-fronted Drupal + Pantheon target)
 
 - **Subdomain target apex normalisation** (`internal/modules/dns.go`,
   `extractApexDomain`; `internal/modules/passive.go`): when the operator runs
@@ -16,18 +17,16 @@ applicable.
   (eTLD+1) before issuing NS, MX, TXT, and subdomain brute-force queries.
   Previously every DNS infrastructure query was issued against the subdomain
   itself, which has no NS/MX records and either returns no SPF or returns a
-  misleading hard-fail SPF (e.g. `v=spf1 -all` on `www.hackerone.com`) that
-  hides the apex's real policy with `include:` statements. The passive source
-  filter (`add` in passive.go) was affected because it filtered results against
-  the subdomain (`endsWith(".www.hackerone.com")` discards
-  `api.hackerone.com`), producing "1 unique subdomain" when the apex had 10+.
-  Verified against hackerone.com: passive subdomains 1 → 21
-  (hackertarget 10, rapiddns 11); NS 0 → 2; MX 0 → 5; SPF
-  `v=spf1 -all` → `v=spf1 include:_spf.google.com include:amazonses.com
-  include:mail.zendesk.com include:spf.mail.intercom.io include:mktomail.com
-  include:registrarmail.net -all`. The operator-facing log emits
-  `▸ Target "www.hackerone.com" is a subdomain — normalising DNS queries to
-  apex "hackerone.com"` so the auto-normalisation is never silent.
+  misleading hard-fail SPF (e.g. `v=spf1 -all` on `www`) that hides the
+  apex's real policy with `include:` statements. The passive source filter
+  (`add` in passive.go) was affected because it filtered results against the
+  subdomain (`endsWith(".www.<apex>")` discards real subdomains of the apex),
+  producing "1 unique subdomain" when the apex had 10+. Verified against the
+  CDN-fronted target: passive subdomains 1 → 21; NS 0 → 2; MX 0 → 5; SPF
+  changed from a misleading `v=spf1 -all` to the apex's real policy with
+  6 `include:` statements. The operator-facing log emits
+  `▸ Target "www.<apex>" is a subdomain — normalising DNS queries to apex "<apex>"`
+  so the auto-normalisation is never silent.
 
 ### Compatibility
 
@@ -39,8 +38,8 @@ applicable.
 
 ## [1.0.3] — 2026-08-11
 
-### False-Positive Fixes (validated against nuevageneracion.ed.cr,
-### lasalle.ed.cr, keralauniversity.ac.in)
+### False-Positive Fixes (validated against 3 authorized targets spanning
+### two tech stacks: a Wix-hosted SPA and 2 Apache/PHP sites)
 
 - **Cloud bucket false ownership** (`internal/modules/discovery.go`,
   `RunCloudStorage`): buckets responding HTTP 200 with generic names
@@ -60,7 +59,7 @@ applicable.
   before being added to the findings. Previously the URL was added on
   reference alone, producing MEDIUM false positives when CMS themes
   ship the comment but not the `.map` file. Verified: 3 false positives
-  in keralauniversity.ac.in (all return 404), 1 in lasalle.ed.cr.
+  in the Apache/PHP targets (all return 404), 1 in the Wix-hosted target.
 
 ### False-Negative Fixes
 
@@ -71,8 +70,9 @@ applicable.
   a domain-scope query (`matchType=domain`) before giving up.
   Previously CDN-hosted targets (Wix, Cloudflare, Azure) reported
   "Wayback Machine: 0 URLs" even when the CDX API had thousands of
-  historical snapshots of the apex domain. Verified: lasalle.ed.cr
-  went from 0 → 10782 URLs; keralauniversity.ac.in from 5000 → 100001 URLs.
+  historical snapshots of the apex domain. Verified: the Wix-hosted
+  target went from 0 → 10,782 URLs; the largest Apache/PHP target
+  from 5,000 → 100,001 URLs.
 
 - **DNS module silent failures** (`internal/modules/dns.go`, `RunDNS`):
   the resolver errors from `LookupNS`, `LookupMX`, and `LookupTXT`
@@ -95,12 +95,10 @@ applicable.
 Regression-tested against three authorized targets covering two tech
 stacks (Wix-hosted SPA + Apache/PHP):
 
-| Target | HIGH before | HIGH after | Total findings |
+| Target type | HIGH before | HIGH after | Total findings |
 |---|---|---|---|
-| keralauniversity.ac.in | 1 | 0 | 24 → 21 |
-| lasalle.ed.cr | 1 | 0 | 24 → 23 |
-
-Full analysis at `/home/kali/recon/<target>/13_analisis/COMPARATIVO_PRE_vs_POST_FIX.md`.
+| Apache/PHP (largest) | 1 | 0 | 24 → 21 |
+| Wix-hosted SPA     | 1 | 0 | 24 → 23 |
 
 ## [1.0.2] — 2026-08-10
 
