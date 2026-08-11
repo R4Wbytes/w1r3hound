@@ -5,6 +5,94 @@ follows [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) where
 applicable.
 
+## [1.0.6] — 2026-08-11
+
+Eight false-positive fixes validated against three Anthropic HackerOne
+bug bounty targets (`docs.anthropic.com`, `console.anthropic.com`, and
+`claude.ai`), comparing W1r3Hound output against manual Kali Linux tool
+verification.
+
+### False-Positive Fixes
+
+- **Stripe publishable keys / Google OAuth IDs flagged as HIGH secrets**
+  (`content.go`): `pk_live_*` Stripe publishable keys and Google OAuth
+  Client IDs are designed for client-side use and are NOT secrets. They
+  are now separated from real secrets into an INFO-level "Public
+  client-side credentials" finding. The HIGH-severity "Potential
+  secrets/API keys found" finding now only fires for actual secret
+  material (sk_live, AWS keys, private keys, etc.).
+
+- **Cloud bucket generic name detection incomplete** (`discovery.go`,
+  `looksGenericBucketName`): when the base name (e.g. `docs`, `console`)
+  is in the generic set, all its permutations (`docs-dev`,
+  `console-prod`, etc.) are now also marked generic. Previously only
+  exact matches were checked, so `docs-api`, `docs-images`,
+  `console-dev`, `console-prod` etc. — all belonging to unrelated third
+  parties — were counted as HIGH-severity public buckets.
+
+- **`console` added to generic bucket names** (`discovery.go`): the name
+  `console` is as generic as `app`, `api`, `docs` — verified that
+  `console-dev` GCS contains Google AdMob/DSP data, not target data.
+
+- **SaaS module uses subdomain instead of organisation name**
+  (`saas.go`): `orgName` was derived from `strings.Split(cfg.Domain,
+  ".")[0]`, giving `docs` for `docs.anthropic.com`. Now uses
+  `extractApexDomain` to get the apex, then takes the first label
+  (`anthropic`). This eliminated 8 false positives (e.g.
+  `docs.zoom.us`) and found 9 correct matches (e.g.
+  `anthropic.zendesk.com`, `anthropic.okta.com`).
+
+- **Internal IP detection flags documentation example IPs**
+  (`content.go`): common RFC 1918 addresses used in documentation
+  (192.168.1.0, 192.168.1.1, 10.0.0.1, etc.) are now filtered via
+  `isDocumentationIP`. On `docs.anthropic.com`, this eliminated a false
+  `192.168.1.0` "leak" that was actually documentation content.
+
+- **API docs false positive on cross-domain redirects** (`api.go`):
+  `/docs` on `console.anthropic.com` redirects to
+  `platform.claude.com/docs` (the public product docs). The apiscan
+  module now tracks the final URL after redirects and skips findings
+  where the response came from a different domain (using apex-aware
+  comparison). Additionally, the `api-docs` type validation was
+  tightened: it no longer matches on `"api documentation"` alone (which
+  matched any docs site), now requiring OpenAPI/Swagger spec markers.
+
+- **Sensitive path detection on SPA/catch-all sites** (`metafiles.go`,
+  `helpers.go`): PingFederate, WordPress, Azure App Service paths were
+  flagged as accessible (MEDIUM/LOW) on `claude.ai` even though the
+  server returns its SPA shell for every path. The metadata module now
+  runs catch-all calibration before probing sensitive paths — if the
+  server serves a catch-all response, probes that match its signature
+  are skipped. Additionally, a new `isCloudflareChallenge()` helper
+  detects Cloudflare JS challenge pages and prevents them from being
+  misinterpreted as real content. Response body markers per endpoint type
+  (e.g. "XML-RPC" for xmlrpc.php) add a third layer of validation.
+  Eliminated 8 false positives on `claude.ai`.
+
+- **Public cloud bucket ownership validation** (`discovery.go`): when a
+  public (listable) bucket is found and its name is not in the generic
+  set, the module now inspects the first 20 object keys in the XML
+  listing. If none reference the target domain or organisation, the
+  bucket is marked as unrelated (demoted from HIGH). On `claude.ai`,
+  this correctly identified the GCS `claude` bucket (Gandhi PDFs from
+  2016) and the S3 `claude-test` bucket (baisonNavCoreData from 2018)
+  as belonging to unrelated parties sharing the common first name.
+
+### Compatibility
+
+- All 4 packages pass `go test -race -count=1`; `gofmt -l .` and
+  `go vet ./...` clean.
+- No CLI flag changes; no API breakage; no report-schema changes.
+- Live-verified against three Anthropic HackerOne authorized targets.
+
+### Validation
+
+| Target | HIGH before | HIGH after | MEDIUM before | MEDIUM after | Total before | Total after |
+|---|---|---|---|---|---|---|
+| docs.anthropic.com | 2 | 0 | 0 | 0 | 26 | 24 |
+| console.anthropic.com | 1 | 0 | 1 | 1 | 27 | 25 |
+| claude.ai | 1 | 0 | 5 | 1 | 32 | 22 |
+
 ## [1.0.5] — 2026-08-11
 
 Four rounds of fixes driven by two external audits

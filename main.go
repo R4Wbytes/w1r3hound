@@ -100,7 +100,7 @@ const banner = `
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡴⠋⣀⣽⣿⡀⠈⠛⠀⠀⠀⠀⣀⣤⣾⡿⣿⡿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⢴⠿⠒⠋⠉⠀⠘⡻⢦⡤⠴⠶⠶⡛⡛⢉⣡⣞⡵⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 
-   [ wiretap-grade offensive recon ]   w1r3hound v1.0.5 · OWASP WSTG · BBP · CTF
+   [ wiretap-grade offensive recon ]   w1r3hound v1.0.6 · OWASP WSTG · BBP · CTF
 `
 
 const helpFooter = `

@@ -330,12 +330,73 @@ var genericBucketNames = map[string]bool{
 	"www-app": true, "www-api": true, "www-db": true, "www-docs": true,
 	"images": true, "static": true, "cdn": true, "media": true, "uploads": true,
 	"assets": true, "files": true, "public": true, "data": true, "backup": true,
-	"web": true, "api": true, "app": true, "docs": true,
+	"web": true, "api": true, "app": true, "docs": true, "console": true,
 	"staging": true, "test": true, "dev": true, "prod": true,
 }
 
+// publicBucketLooksUnrelated checks the body of a public (listable) bucket
+// for signs that it belongs to the scan target. We extract a sample of object
+// keys from the XML listing; if none of them reference the target domain or
+// apex organisation, the bucket is almost certainly owned by an unrelated
+// party (e.g. "claude" as a common first name, not Anthropic's "claude.ai").
+func publicBucketLooksUnrelated(body, domain, baseName string) bool {
+	if len(body) == 0 {
+		return false
+	}
+	lower := strings.ToLower(body)
+	if !strings.Contains(lower, "<key>") {
+		return false
+	}
+	keys := extractXMLKeys(lower)
+	if len(keys) == 0 {
+		return false
+	}
+	apex := strings.ToLower(extractApexDomain(domain))
+	apexOrg := strings.Split(apex, ".")[0]
+	refs := []string{strings.ToLower(domain), apex}
+	if apexOrg != strings.ToLower(baseName) {
+		refs = append(refs, apexOrg)
+	}
+	for _, key := range keys {
+		for _, ref := range refs {
+			if strings.Contains(key, ref) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func extractXMLKeys(lower string) []string {
+	var keys []string
+	s := lower
+	for i := 0; i < 20; i++ {
+		start := strings.Index(s, "<key>")
+		if start < 0 {
+			break
+		}
+		s = s[start+5:]
+		end := strings.Index(s, "</key>")
+		if end < 0 {
+			break
+		}
+		keys = append(keys, s[:end])
+		s = s[end+6:]
+	}
+	return keys
+}
+
 func looksGenericBucketName(name string) bool {
-	return genericBucketNames[name]
+	if genericBucketNames[name] {
+		return true
+	}
+	// If the stem (before the first "-") is itself generic, the whole
+	// permutation is generic too: "docs-dev", "api-staging", "data-backup"
+	// are just as unrelated to the target as the bare "docs"/"api"/"data".
+	if i := strings.Index(name, "-"); i > 0 {
+		return genericBucketNames[name[:i]]
+	}
+	return false
 }
 
 func RunCloudStorage(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
@@ -428,13 +489,17 @@ func RunCloudStorage(cfg *core.Config, report *core.ReconReport, log *core.Logge
 					if strings.Contains(lb, "nosuchbucket") {
 						return // doesn't actually exist
 					}
+					generic := public && looksGenericBucketName(n)
+					if public && !generic {
+						generic = publicBucketLooksUnrelated(body, domain, baseName)
+					}
 					bucket := CloudBucket{
 						Provider: c.provider,
 						Name:     n,
 						URL:      url,
 						Public:   public,
 						Status:   status,
-						Generic:  public && looksGenericBucketName(n),
+						Generic:  generic,
 					}
 					mu.Lock()
 					result.Buckets = append(result.Buckets, bucket)
@@ -442,7 +507,7 @@ func RunCloudStorage(cfg *core.Config, report *core.ReconReport, log *core.Logge
 
 					if public {
 						if bucket.Generic {
-							log.Info("Public bucket (generic name, not validated as target-owned): %s (%s)", url, c.provider)
+							log.Info("Public bucket (content unrelated to target): %s (%s)", url, c.provider)
 						} else {
 							log.Warn("PUBLIC bucket: %s (%s)", url, c.provider)
 						}

@@ -174,19 +174,28 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 	}
 
 	// ── Fingerprint-aware path probing ──
+	// Calibrate catch-all / SPA behaviour first: if the server returns 200
+	// for arbitrary paths we must not trust bare 200s as proof that a
+	// technology-specific endpoint exists.
+	catchAll := calibrateCatchAll(client, target, cfg)
+	if catchAll.isCatchAll {
+		log.Warn("Catch-all/SPA detected (~%d bytes) — filtering sensitive-path false positives", catchAll.bodyLen)
+	}
+
 	techPaths := []struct {
-		Path string
-		Desc string
+		Path   string
+		Desc   string
+		Marker string // body substring that confirms a genuine response
 	}{
-		{"/pf/heartbeat.ping", "PingFederate heartbeat"},
-		{"/pf-ws/rest/sessionMgmt/", "PingFederate session management API"},
-		{"/wp-json/", "WordPress REST API namespace"},
-		{"/wp-json/wp/v2/users", "WordPress user enumeration"},
-		{"/wp-signup.php", "WordPress signup page"},
-		{"/xmlrpc.php", "WordPress XML-RPC"},
-		{"/wp-admin/maint/repair.php", "WordPress database repair"},
-		{"/.auth/me", "Azure App Service auth"},
-		{"/.auth/login/aad", "Azure AAD login"},
+		{"/pf/heartbeat.ping", "PingFederate heartbeat", "OK"},
+		{"/pf-ws/rest/sessionMgmt/", "PingFederate session management API", ""},
+		{"/wp-json/", "WordPress REST API namespace", "wp-json"},
+		{"/wp-json/wp/v2/users", "WordPress user enumeration", "\"id\""},
+		{"/wp-signup.php", "WordPress signup page", "wp-signup"},
+		{"/xmlrpc.php", "WordPress XML-RPC", "XML-RPC"},
+		{"/wp-admin/maint/repair.php", "WordPress database repair", "repair"},
+		{"/.auth/me", "Azure App Service auth", ""},
+		{"/.auth/login/aad", "Azure AAD login", ""},
 	}
 	for _, tp := range techPaths {
 		body, status, err := core.FetchBodyRL(client, target+tp.Path, cfg.UserAgent, cfg.RL)
@@ -194,6 +203,18 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 			continue
 		}
 		if status == 200 && len(body) > 0 {
+			if isCloudflareChallenge(body) {
+				log.Debug("Sensitive path %s returned CF challenge, skipping", tp.Path)
+				continue
+			}
+			if catchAll.matches(status, len(body)) {
+				log.Debug("Sensitive path %s matches catch-all signature, skipping", tp.Path)
+				continue
+			}
+			if tp.Marker != "" && !strings.Contains(strings.ToLower(body), strings.ToLower(tp.Marker)) {
+				log.Debug("Sensitive path %s lacks expected marker %q, skipping", tp.Path, tp.Marker)
+				continue
+			}
 			log.Warn("Sensitive path accessible: %s (%s)", tp.Path, tp.Desc)
 			sev := core.SevLow
 			if strings.Contains(tp.Path, "heartbeat") || strings.Contains(tp.Path, "sessionMgmt") || strings.Contains(tp.Path, "users") {

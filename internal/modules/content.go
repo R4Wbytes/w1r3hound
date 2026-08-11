@@ -283,7 +283,7 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	ipSeen := make(map[string]bool)
 	for _, m := range ipMatches {
 		ip := m[1]
-		if !ipSeen[ip] {
+		if !ipSeen[ip] && !isDocumentationIP(ip) {
 			ipSeen[ip] = true
 			result.InternalIPs = append(result.InternalIPs, ip)
 		}
@@ -312,19 +312,40 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		log.Info("Emails found: %v", result.Emails)
 	}
 
-	// Report secrets
-	if len(result.SecretsFound) > 0 {
+	// Separate real secrets from public client-side credentials (Stripe
+	// publishable keys, Google OAuth client IDs, etc.) which are designed
+	// to be embedded in frontend code and are NOT secrets.
+	var realSecrets, publicCreds []SecretMatch
+	for _, s := range result.SecretsFound {
+		if isPublicClientCredential(s.Type) {
+			publicCreds = append(publicCreds, s)
+		} else {
+			realSecrets = append(realSecrets, s)
+		}
+	}
+
+	if len(realSecrets) > 0 {
 		sev := core.SevHigh
-		if allGeneric(result.SecretsFound) {
+		if allGeneric(realSecrets) {
 			sev = core.SevMedium
 		}
 		report.Add(core.Finding{
 			Module:      "content",
 			WSTG:        "WSTG-INFO-05",
-			Title:       fmt.Sprintf("Potential secrets/API keys found: %d matches", len(result.SecretsFound)),
+			Title:       fmt.Sprintf("Potential secrets/API keys found: %d matches", len(realSecrets)),
 			Severity:    sev,
 			Description: "Sensitive data exposed in client-side code.",
-			Data:        result.SecretsFound,
+			Data:        realSecrets,
+		})
+	}
+	if len(publicCreds) > 0 {
+		report.Add(core.Finding{
+			Module:      "content",
+			WSTG:        "WSTG-INFO-05",
+			Title:       fmt.Sprintf("Public client-side credentials found: %d (not secrets)", len(publicCreds)),
+			Severity:    core.SevInfo,
+			Description: "Client-side credentials (Stripe publishable keys, OAuth client IDs) are designed for frontend use and are not secrets.",
+			Data:        publicCreds,
 		})
 	}
 
@@ -535,6 +556,37 @@ func isBoringComment(c string) bool {
 		}
 	}
 	return len(c) > 500 // skip very long minified chunks
+}
+
+// isDocumentationIP returns true for RFC 1918 addresses commonly used
+// in documentation, tutorials, and code examples rather than being
+// actual infrastructure leaks. Network addresses (.0), default
+// gateways (.1), and RFC 5737 documentation prefixes are filtered.
+func isDocumentationIP(ip string) bool {
+	docIPs := map[string]bool{
+		"10.0.0.0": true, "10.0.0.1": true,
+		"10.1.0.0": true, "10.1.0.1": true, "10.1.1.0": true, "10.1.1.1": true,
+		"10.10.10.0": true, "10.10.10.1": true,
+		"172.16.0.0": true, "172.16.0.1": true,
+		"192.168.0.0": true, "192.168.0.1": true,
+		"192.168.1.0": true, "192.168.1.1": true,
+		"192.168.10.0": true, "192.168.10.1": true,
+		"192.168.100.0": true, "192.168.100.1": true,
+	}
+	return docIPs[ip]
+}
+
+// isPublicClientCredential returns true for credential types that are
+// designed for client-side/frontend use and are NOT secrets. Stripe
+// publishable keys (pk_live_*) are explicitly intended for browser
+// embedding; Google OAuth Client IDs must be public for OAuth redirect
+// flows. Flagging these as HIGH-severity "secrets" is a false positive.
+func isPublicClientCredential(typeName string) bool {
+	switch typeName {
+	case "Stripe Publishable Key", "Google OAuth ID", "Firebase URL":
+		return true
+	}
+	return false
 }
 
 func allGeneric(secrets []SecretMatch) bool {

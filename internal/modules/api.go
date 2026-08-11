@@ -137,10 +137,29 @@ func RunAPI(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	log.Info("Probing %d API documentation paths...", len(apiDocPaths))
 	for _, doc := range apiDocPaths {
 		url := target + doc.Path
-		body, status, err := core.FetchBodyRL(client, url, cfg.UserAgent, cfg.RL)
-		if err != nil || status != 200 {
+		resp, err := core.DoRequestRL(client, "GET", url, cfg.UserAgent, cfg.RL)
+		if err != nil || resp.StatusCode != 200 {
+			if resp != nil {
+				resp.Body.Close()
+			}
 			continue
 		}
+		bodyBytes := core.ReadBodyLimit(resp, 10*1024*1024)
+		resp.Body.Close()
+		body := bodyBytes
+		status := 200
+
+		// Skip if we were redirected to a different domain — a redirect
+		// to an external docs site is not an API spec exposure on the target.
+		if resp.Request != nil && resp.Request.URL != nil {
+			finalHost := resp.Request.URL.Hostname()
+			apex := extractApexDomain(cfg.Domain)
+			if finalHost != cfg.Domain && !strings.HasSuffix(finalHost, "."+apex) && finalHost != apex {
+				log.Debug("API doc path %s redirected to %s (off-target), skipping", doc.Path, finalHost)
+				continue
+			}
+		}
+
 		// Reject catch-all app shell
 		if catchAll.matches(status, len(body)) {
 			continue
@@ -153,9 +172,13 @@ func RunAPI(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		case "swagger", "openapi":
 			isDoc = strings.Contains(lower, "swagger") || strings.Contains(lower, "openapi") ||
 				strings.Contains(body, "\"paths\"") || strings.Contains(body, "\"definitions\"")
-		case "swagger-ui", "redoc", "api-docs":
+		case "swagger-ui", "redoc":
 			isDoc = strings.Contains(lower, "swagger") || strings.Contains(lower, "redoc") ||
-				strings.Contains(lower, "openapi") || strings.Contains(lower, "api documentation")
+				strings.Contains(lower, "openapi")
+		case "api-docs":
+			isDoc = strings.Contains(lower, "swagger") || strings.Contains(lower, "redoc") ||
+				strings.Contains(lower, "openapi") ||
+				(strings.Contains(body, "\"paths\"") && strings.Contains(body, "\"info\""))
 		case "graphql-schema":
 			isDoc = strings.Contains(body, "__schema") || strings.Contains(body, "\"types\"")
 		}

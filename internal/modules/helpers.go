@@ -23,3 +23,13 @@ func contains(slice []string, item string) bool {
 	}
 	return false
 }
+
+func isCloudflareChallenge(body string) bool {
+	if len(body) > 10000 {
+		return false
+	}
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "just a moment") &&
+		strings.Contains(lower, "cloudflare") &&
+		strings.Contains(lower, "challenge-platform")
+}

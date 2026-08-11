@@ -77,7 +77,10 @@ func RunSaaS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	}
 
 	client := core.NewHTTPClient(cfg)
-	orgName := strings.Split(cfg.Domain, ".")[0]
+	// Use the apex domain (eTLD+1) so scanning "docs.anthropic.com"
+	// checks "anthropic.zendesk.com", not "docs.zendesk.com".
+	apex := extractApexDomain(cfg.Domain)
+	orgName := strings.Split(apex, ".")[0]
 	log.Info("Checking SaaS platforms for org '%s'...", orgName)
 
 	result := SaaSResult{}
