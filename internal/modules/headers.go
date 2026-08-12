@@ -480,6 +480,19 @@ func RunHeaders(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		}
 	}
 
+	// ── 4. Framework fingerprint via HTML body (WSTG-INFO-08) ──
+	// Header/cookie detection is blind to modern single-page apps, which
+	// announce themselves only in the markup (Angular's <app-root>, Next.js's
+	// __NEXT_DATA__, …). Read the HTML body once and match a high-signal set so
+	// an SPA target isn't mislabelled as "1 technology".
+	if isHTMLContentType(resp.Header.Get("Content-Type")) {
+		body := core.ReadBodyLimit(resp, 512*1024)
+		for _, td := range detectBodyTech(body) {
+			result.Technologies = append(result.Technologies, td)
+			log.Info("Tech detected [body]: %s (%s)", td.Name, td.Value)
+		}
+	}
+
 	report.Add(core.Finding{
 		Module:   "headers",
 		WSTG:     "WSTG-INFO-08",
@@ -487,6 +500,51 @@ func RunHeaders(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		Severity: core.SevInfo,
 		Data:     result,
 	})
+}
+
+// bodyTechSignatures fingerprints web frameworks from static HTML markup. Each
+// framework lists high-signal substrings; a single match identifies it. Kept
+// deliberately specific (Angular's "<app-root", Next.js's "__NEXT_DATA__") to
+// avoid false positives from generic words.
+var bodyTechSignatures = []struct {
+	Name     string
+	Patterns []string
+}{
+	{"Angular", []string{"<app-root", "ng-version=", "_nghost", "_ngcontent"}},
+	{"React", []string{"data-reactroot", "__REACT_DEVTOOLS_GLOBAL_HOOK__"}},
+	{"Next.js", []string{"__NEXT_DATA__", "/_next/static"}},
+	{"Nuxt.js", []string{"__NUXT__", "/_nuxt/"}},
+	{"Vue.js", []string{"data-v-app", "data-server-rendered", "__vue__"}},
+	{"Gatsby", []string{"___gatsby", "/page-data/app-data.json"}},
+	{"SvelteKit", []string{"__sveltekit", "sveltekit:"}},
+	{"jQuery", []string{"/jquery-", "/jquery.min.js"}},
+	{"WordPress", []string{"/wp-content/", "/wp-includes/"}},
+	{"Drupal", []string{"Drupal.settings", "/sites/all/"}},
+	{"Bootstrap", []string{"/bootstrap.min.css", "/bootstrap.min.js"}},
+}
+
+// ngVersionRe extracts the Angular version from ng-version="X.Y.Z" when present.
+var ngVersionRe = regexp.MustCompile(`ng-version="([^"]+)"`)
+
+// detectBodyTech returns the frameworks whose signature appears in the HTML body.
+func detectBodyTech(body string) []TechDetection {
+	var techs []TechDetection
+	for _, sig := range bodyTechSignatures {
+		for _, p := range sig.Patterns {
+			if !strings.Contains(body, p) {
+				continue
+			}
+			value := p
+			if sig.Name == "Angular" {
+				if m := ngVersionRe.FindStringSubmatch(body); len(m) > 1 {
+					value = "version " + m[1]
+				}
+			}
+			techs = append(techs, TechDetection{Source: "body", Name: sig.Name, Value: value})
+			break // one match per framework is enough
+		}
+	}
+	return techs
 }
 
 func sameSiteName(s http.SameSite) string {
