@@ -3,6 +3,7 @@ package modules
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/w1r3hound/w1r3hound/internal/core"
@@ -244,6 +245,8 @@ func RunAPI(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		{"/v3", ""},
 	}
 	liveBase := make(map[string]bool) // which base paths responded as real APIs
+	var stackTraceEndpoints []string
+	stackTraceSeen := make(map[string]bool)
 	for _, p := range apiProbes {
 		if p.Base != "" && liveBase[p.Base] {
 			log.Debug("Skipping %s (parent %s already detected)", p.Path, p.Base)
@@ -253,6 +256,14 @@ func RunAPI(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		body, status, err := core.FetchBodyRL(client, url, cfg.UserAgent, cfg.RL)
 		if err != nil {
 			continue
+		}
+		// Verbose error / stack-trace disclosure (WSTG-ERRH). Framework error
+		// handlers (e.g. Express's errorhandler on a missing entity) dump a full
+		// stack trace with server-side paths — apiscan already has the body, so
+		// inspect it here rather than re-fetching.
+		if st := detectStackTrace(body); len(st) > 0 && !stackTraceSeen[p.Path] {
+			stackTraceSeen[p.Path] = true
+			stackTraceEndpoints = append(stackTraceEndpoints, fmt.Sprintf("%s [%d] (%s)", p.Path, status, strings.Join(st, ", ")))
 		}
 		exists := false
 		switch status {
@@ -285,6 +296,18 @@ func RunAPI(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		})
 	}
 
+	if len(stackTraceEndpoints) > 0 {
+		log.Warn("Stack trace / verbose error disclosure on %d endpoint(s)", len(stackTraceEndpoints))
+		report.Add(core.Finding{
+			Module:      "apiscan",
+			WSTG:        "WSTG-ERRH-02",
+			Title:       fmt.Sprintf("Stack trace / verbose error disclosure (%d endpoint(s))", len(stackTraceEndpoints)),
+			Severity:    core.SevMedium,
+			Description: "Endpoints return a debug error page / stack trace that leaks the server-side framework, dependency paths and absolute filesystem locations: " + strings.Join(stackTraceEndpoints, ", ") + ". Production apps should return a generic error page instead (WSTG-ERRH).",
+			Data:        stackTraceEndpoints,
+		})
+	}
+
 	// ── 4. WebSocket hint detection (from main page JS) ──
 	body, _, _ := core.FetchBodyRL(client, target, cfg.UserAgent, cfg.RL)
 	wsPatterns := []string{"ws://", "wss://", "new WebSocket", "socket.io", "/socket.io/", "/ws", "/websocket"}
@@ -306,6 +329,50 @@ func RunAPI(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		Severity: core.SevInfo,
 		Data:     result,
 	})
+}
+
+// Stack-trace / verbose-error signatures. Kept specific so a normal JSON error
+// envelope ({"message":"Not Found"}) never trips them.
+var (
+	stJSFrame   = regexp.MustCompile(`\.js:\d+:\d+`) // Node "file.js:line:col"
+	stPyTrace   = regexp.MustCompile(`Traceback \(most recent call last\)`)
+	stPHPTrace  = regexp.MustCompile(`(?i)(fatal error|parse error|uncaught \w+)[: ].*(on line \d+|\.php)`)
+	stJavaFrame = regexp.MustCompile(`\bat [\w.$]+\([\w ]+\.java:\d+\)`)
+	stRubyFrame = regexp.MustCompile(`\.rb:\d+:in `)
+)
+
+// detectStackTrace reports which server-side stack traces / verbose error dumps
+// a response body reveals. It returns the language/framework labels detected
+// (empty for a normal error envelope), requiring several stack-trace tokens
+// together so a plain JSON {"error":...} can't trigger it. Such a dump leaks the
+// framework, dependency paths and absolute server filesystem locations
+// (WSTG-ERRH — e.g. Juice Shop's Express errorhandler on /api and /rest).
+func detectStackTrace(body string) []string {
+	if len(body) > 256*1024 {
+		body = body[:256*1024]
+	}
+	var hits []string
+	// A "file.js:line:col" position together with a server-side dependency path
+	// or the Express errorhandler title is unambiguously a stack-trace/error
+	// dump (the " at frame" text is HTML-wrapped in the errorhandler page, so it
+	// isn't a reliable marker on its own).
+	if stJSFrame.MatchString(body) &&
+		(strings.Contains(body, "node_modules") || strings.Contains(body, "<title>Error:")) {
+		hits = append(hits, "Node.js")
+	}
+	if stPyTrace.MatchString(body) {
+		hits = append(hits, "Python")
+	}
+	if stPHPTrace.MatchString(body) {
+		hits = append(hits, "PHP")
+	}
+	if stJavaFrame.MatchString(body) {
+		hits = append(hits, "Java")
+	}
+	if stRubyFrame.MatchString(body) {
+		hits = append(hits, "Ruby")
+	}
+	return hits
 }
 
 // looksLikeAPIResponse reports whether a 200 body resembles an API payload
