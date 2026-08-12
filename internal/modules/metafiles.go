@@ -347,6 +347,12 @@ var sensitiveListingExts = []string{
 	".key", ".pem", ".p12", ".pfx", ".env", ".pyc", ".git",
 }
 
+// logFileRe matches log files including rotated ones, where ".log" is not the
+// final suffix: access.log, error.log, access.log.2026-08-11, app.log.1.gz.
+// Access/error logs exposed via a listing leak request paths, IPs and often
+// session tokens (e.g. Juice Shop /support/logs, the accessLogDisclosureChallenge).
+var logFileRe = regexp.MustCompile(`(?i)\.log(\.[0-9a-z_.-]+)?$`)
+
 // isDirectoryListing reports whether an HTML body is an auto-generated directory
 // index — Apache/nginx autoindex or the Node serve-index used by Express apps
 // like Juice Shop. A listing hands an attacker every filename in the directory,
@@ -395,11 +401,17 @@ func sensitiveListingFiles(entries []string) []string {
 	var out []string
 	for _, e := range entries {
 		lower := strings.ToLower(e)
-		for _, ext := range sensitiveListingExts {
-			if strings.HasSuffix(lower, ext) {
-				out = append(out, e)
-				break
+		hit := logFileRe.MatchString(lower)
+		if !hit {
+			for _, ext := range sensitiveListingExts {
+				if strings.HasSuffix(lower, ext) {
+					hit = true
+					break
+				}
 			}
+		}
+		if hit {
+			out = append(out, e)
 		}
 	}
 	return out
@@ -447,22 +459,32 @@ func probeRobotsDisallowed(client *http.Client, cfg *core.Config, target string,
 			continue
 		}
 		entries := extractListingEntries(body)
-		sensitive := sensitiveListingFiles(entries)
-		sev := core.SevMedium
-		desc := fmt.Sprintf("Directory listing at %s (disclosed via robots.txt Disallow) exposes %d entries.", p, len(entries))
-		if len(sensitive) > 0 {
-			sev = core.SevHigh
-			desc = fmt.Sprintf("Directory listing at %s (disclosed via robots.txt Disallow) exposes %d entries, including %d sensitive file(s): %s.",
-				p, len(entries), len(sensitive), strings.Join(sensitive, ", "))
-		}
-		log.Warn("Directory listing enabled at %s — %d entries (%d sensitive)", p, len(entries), len(sensitive))
-		report.Add(core.Finding{
-			Module:      "metafiles",
-			WSTG:        "WSTG-CONF-04",
-			Title:       fmt.Sprintf("Directory listing enabled at %s", p),
-			Severity:    sev,
-			Description: desc,
-			Data:        entries,
-		})
+		log.Warn("Directory listing enabled at %s — %d entries (%d sensitive)", p, len(entries), len(sensitiveListingFiles(entries)))
+		report.Add(buildDirectoryListingFinding("metafiles", p, " (disclosed via robots.txt Disallow)", entries))
+	}
+}
+
+// buildDirectoryListingFinding constructs the WSTG-CONF-04 finding for a
+// discovered auto-indexed directory. It is rated HIGH when the listing exposes
+// backups/secrets/keys/logs and MEDIUM otherwise. sourceNote is an optional
+// parenthetical describing how the path was found (e.g. via robots.txt). Shared
+// by the metafiles (robots.txt-driven) and dirbrute (wordlist-driven) discovery
+// paths so both rate and phrase directory listings identically.
+func buildDirectoryListingFinding(module, path, sourceNote string, entries []string) core.Finding {
+	sensitive := sensitiveListingFiles(entries)
+	sev := core.SevMedium
+	desc := fmt.Sprintf("Directory listing at %s%s exposes %d entries.", path, sourceNote, len(entries))
+	if len(sensitive) > 0 {
+		sev = core.SevHigh
+		desc = fmt.Sprintf("Directory listing at %s%s exposes %d entries, including %d sensitive file(s): %s.",
+			path, sourceNote, len(entries), len(sensitive), strings.Join(sensitive, ", "))
+	}
+	return core.Finding{
+		Module:      module,
+		WSTG:        "WSTG-CONF-04",
+		Title:       fmt.Sprintf("Directory listing enabled at %s", path),
+		Severity:    sev,
+		Description: desc,
+		Data:        entries,
 	}
 }

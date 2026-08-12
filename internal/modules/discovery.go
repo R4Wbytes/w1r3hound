@@ -598,6 +598,13 @@ type promHit struct {
 	Leaks   []string `json:"leaks,omitempty"`
 }
 
+// listingHit records a discovered auto-indexed (browsable) directory and the
+// entry names it exposes.
+type listingHit struct {
+	Path    string
+	Entries []string
+}
+
 // stripPathHash hashes a body after removing the requested path from it, so
 // pages that merely echo the path back still hash identically to the shell.
 // Only the full requested path is stripped. We deliberately do NOT also strip
@@ -728,6 +735,14 @@ var defaultDirPaths = []string{
 	"/404", "/500",
 	"/error", "/errors/", "/error_log",
 	"/cgi-bin/", "/cgi-bin/test",
+
+	// Browsable directories (serve-index / autoindex frequently left enabled).
+	// Trailing slashes so listings return clean, relative entry names. The
+	// first row is validated against OWASP Juice Shop's serve-index routes.
+	"/encryptionkeys/", "/infrastructure/", "/support/logs/", "/.well-known/",
+	"/uploads/", "/files/", "/file/", "/logs/", "/log/", "/data/",
+	"/keys/", "/certs/", "/private/", "/tmp/", "/temp/",
+	"/download/", "/downloads/", "/documents/", "/docs/", "/media/",
 }
 
 // loadDirPaths returns the wordlist to use for directory bruteforce: the
@@ -836,6 +851,7 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 	result := DirBruteResult{}
 	var promHits []promHit
+	var listingHits []listingHit
 	var (
 		mu  sync.Mutex
 		wg  sync.WaitGroup
@@ -887,16 +903,21 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 					Size:       int64(bodyLen),
 				}
 				var ph *promHit
+				var lh *listingHit
 				if resp.StatusCode == 200 {
 					entry.bodyHash = stripPathHash(bodyStr, p)
 					// Classify by content while the body is still in hand: a path's
-					// name (/metrics) doesn't reveal it's a live Prometheus endpoint,
-					// but its body does. This turns a generic "path found" into an
-					// information-disclosure finding.
-					if isPrometheusMetrics(bodyStr) {
+					// name doesn't reveal that it's a live Prometheus endpoint or a
+					// browsable directory, but its body does. This turns a generic
+					// "path found" into a specific information-disclosure finding.
+					switch {
+					case isPrometheusMetrics(bodyStr):
 						entry.Kind = "prometheus"
 						mc, leaks := prometheusExposure(bodyStr)
 						ph = &promHit{Path: p, Metrics: mc, Leaks: leaks}
+					case isDirectoryListing(bodyStr):
+						entry.Kind = "directory-listing"
+						lh = &listingHit{Path: p, Entries: extractListingEntries(bodyStr)}
 					}
 				}
 				if resp.StatusCode == 301 || resp.StatusCode == 302 {
@@ -907,6 +928,9 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 				result.Found = append(result.Found, entry)
 				if ph != nil {
 					promHits = append(promHits, *ph)
+				}
+				if lh != nil {
+					listingHits = append(listingHits, *lh)
 				}
 				mu.Unlock()
 
@@ -940,14 +964,15 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		log.Info("Cluster analysis removed %d additional soft-404/403 responses", diff)
 	}
 
-	// ── Prometheus metrics exposure (WSTG-CONF-02) ──
-	// Report only endpoints whose entry survived soft-404/cluster filtering, so
-	// the finding stays consistent with the discovered-paths list.
-	if len(promHits) > 0 {
+	// ── Content-classified findings ──
+	// Emit only for endpoints whose entry survived soft-404/cluster filtering, so
+	// the findings stay consistent with the discovered-paths list.
+	if len(promHits) > 0 || len(listingHits) > 0 {
 		survived := make(map[string]bool, len(result.Found))
 		for _, e := range result.Found {
 			survived[e.Path] = true
 		}
+		// Prometheus metrics exposure (WSTG-CONF-02)
 		for _, h := range promHits {
 			if !survived[h.Path] {
 				continue
@@ -965,6 +990,14 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 				Description: desc,
 				Data:        h,
 			})
+		}
+		// Browsable directory listings (WSTG-CONF-04)
+		for _, h := range listingHits {
+			if !survived[h.Path] {
+				continue
+			}
+			log.Warn("Directory listing enabled at %s — %d entries (%d sensitive)", h.Path, len(h.Entries), len(sensitiveListingFiles(h.Entries)))
+			report.Add(buildDirectoryListingFinding("dirbrute", h.Path, "", h.Entries))
 		}
 	}
 
@@ -1351,6 +1384,12 @@ func clusterFilterSoft404s(entries []DirEntry, baseline soft404Baseline, log *co
 	var kept []DirEntry
 	for _, e := range status200 {
 		outsideCluster := abs(int(e.Size)-median) > tolerance
+		// Content-classified entries (a Prometheus endpoint, a directory listing)
+		// were positively identified by inspecting their body, so they are never
+		// the catch-all shell no matter how close their size is to it — always
+		// keep them, even when a run of similarly-sized real listings would
+		// otherwise look like a cluster.
+		classified := e.Kind != ""
 		// Keep an always-keep path unless we can POSITIVELY identify it as the
 		// shell: we have a shell fingerprint, we captured this response's body,
 		// its size is in the cluster, AND its body matches the shell. Any missing
@@ -1358,7 +1397,7 @@ func clusterFilterSoft404s(entries []DirEntry, baseline soft404Baseline, log *co
 		// real .env whose body we couldn't compare).
 		provablyShell := shellHash != 0 && e.bodyHash != 0 && !outsideCluster && e.bodyHash == shellHash
 		sensitiveKeep := isAlwaysKeepPath(e.Path) && !provablyShell
-		if outsideCluster || sensitiveKeep {
+		if outsideCluster || sensitiveKeep || classified {
 			kept = append(kept, e)
 		} else if isAlwaysKeepPath(e.Path) {
 			log.Debug("Dropping shell-identical sensitive path (catch-all false positive): %s", e.Path)

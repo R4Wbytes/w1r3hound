@@ -117,16 +117,28 @@ func TestSensitiveListingFiles(t *testing.T) {
 		"legal.md", "acquisitions.md", "eastere.gg", "quarantine",
 		"package.json.bak", "coupons_2013.md.bak", "incident-support.kdbx",
 		"encrypt.pyc", "backup.sql", "keys.pem",
+		// Logs, incl. rotated names where ".log" is not the final suffix
+		// (Juice Shop /support/logs, the accessLogDisclosureChallenge).
+		"error.log", "access.log.2026-08-11", "app.log.1",
+		// Look-alikes that must NOT be mistaken for logs.
+		"catalog.js", "blog.html", "changelog.md",
 	}
 	got := sensitiveListingFiles(entries)
-	for _, want := range []string{"package.json.bak", "coupons_2013.md.bak", "incident-support.kdbx", "encrypt.pyc", "backup.sql", "keys.pem"} {
+	for _, want := range []string{
+		"package.json.bak", "coupons_2013.md.bak", "incident-support.kdbx",
+		"encrypt.pyc", "backup.sql", "keys.pem",
+		"error.log", "access.log.2026-08-11", "app.log.1",
+	} {
 		if !contains(got, want) {
 			t.Errorf("expected %q to be flagged sensitive; got %v", want, got)
 		}
 	}
-	for _, safe := range []string{"legal.md", "acquisitions.md", "eastere.gg", "quarantine"} {
+	for _, safe := range []string{
+		"legal.md", "acquisitions.md", "eastere.gg", "quarantine",
+		"catalog.js", "blog.html", "changelog.md",
+	} {
 		if contains(got, safe) {
-			t.Errorf("%q is not a backup/secret and must not be flagged", safe)
+			t.Errorf("%q is not a backup/secret/log and must not be flagged", safe)
 		}
 	}
 }
