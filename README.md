@@ -18,10 +18,7 @@
 — Dusan Nemec"*
 
 **w1r3hound** is a single-binary offensive reconnaissance framework for
-bug bounty hunting, penetration testing, and CTF competitions. The name
-is a play on *wire* (a wiretap, a digital listening post) + *hound* (a
-tracker with predator instinct): a surveillance system that picks up a
-scent and doesn't let go. It implements the full OWASP WSTG v4.2
+bug bounty hunting, penetration testing, and CTF competitions. It implements the full OWASP WSTG v4.2
 Information Gathering phase and extends it with coverage gaps that
 most scanners miss: ASN-to-CIDR expansion, subfinder-style
 permutations, JS endpoint extraction, cloud-bucket probing, SaaS
