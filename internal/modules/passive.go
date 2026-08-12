@@ -14,8 +14,7 @@ import (
 
 // ══════════════════════════════════════════════
 //  PASSIVE SUBDOMAIN DISCOVERY
-//  Certificate Transparency logs (crt.sh), Wayback,
-//  HackerTarget, AlienVault OTX, RapidDNS and Anubis.
+//  Certificate Transparency logs (crt.sh, CertSpotter),\n//  HackerTarget, AlienVault OTX, RapidDNS and Anubis.
 //  Pure passive — no traffic to target.
 //  (Checklist Fase 1.1: CT logs, passive DNS)
 // ══════════════════════════════════════════════

@@ -10,7 +10,7 @@
 
    [ wiretap-grade offensive recon ]
    ─────────────────────────────────────
-   w1r3hound v1.0.3 · OWASP WSTG · BBP · CTF
+   w1r3hound v1.0.6 · OWASP WSTG · BBP · CTF
 ```
 
 > *"Privacy is a lie. Security is an illusion. The only thing that's real is the data.
@@ -90,7 +90,7 @@ w1r3hound -t target.com -w /path/to/subdomains.txt -o bb_report
 
 ## Scan Protocols
 
-The framework ships with **19 modules** grouped in 5 categories.
+The framework ships with **20 modules** grouped in 5 categories.
 The themed aliases use a wiretap/surveillance vocabulary — both
 themed names and the plain internal names are accepted on the
 command line.
@@ -130,7 +130,7 @@ command line.
 | `cloudsniff` | cloud | S3/Azure/GCS/Firebase/DigitalOcean buckets | CONF-11 |
 | `bruteforce` | dirbrute | Hidden paths, admin panels, backups, configs | CONF-03/04/05 |
 | `apiscan` | apiscan | GraphQL introspection, Swagger/OpenAPI, REST, WS | INFO-06 |
-| `saasenum` | saasenum | SaaS enum (Zendesk/JIRA/Okta/Salesforce +30) | INFO-10 |
+| `saasenum` | saasenum | SaaS enum (Zendesk/JIRA/Okta/Salesforce +19) | INFO-10 |
 | `crawler` | crawler | Web crawl for forms, params, entry points | INFO-06/07 |
 
 ### Deep Analysis
@@ -149,12 +149,12 @@ command line.
 - **SRV enumeration** — 30+ service prefixes (SIP, LDAP, Kerberos, XMPP)
 - **GraphQL introspection** — detects exposed schemas
 - **API doc discovery** — Swagger/OpenAPI/Postman across 20+ paths
-- **SaaS enumeration** — 30 third-party platforms outside the security review cycle
+- **SaaS enumeration** — 19 third-party platforms outside the security review cycle
 - **JS endpoint extraction** — LinkFinder-style with cloud URL & secret detection
 - **HTTP-signature takeover** — 37 service fingerprints (beyond NXDOMAIN-only)
 - **Subdomain permutation** — dev/staging/prod variations with wildcard filtering
 - **Data feedback pipeline** — modules feed subdomains/JS/endpoints to each other
-- **30+ secret patterns** — AWS keys, Stripe, GitHub tokens, JWT, DB strings
+- **26 secret patterns** — AWS keys, Stripe, GitHub tokens, JWT, DB strings
 - **CORS exploitation testing** — origin reflection, null origin, wildcard + credentials
 - **Smart soft-404 detection** — 4-strategy filter + cluster analysis
 - **CDN/WAF awareness** — detects Cloudflare and flags CDN ports
@@ -211,14 +211,25 @@ w1r3hound/
 │   ├── core/
 │   │   └── core.go                  # Config, HTTP client, rate limiter, logger
 │   ├── modules/
+│   │   ├── passive.go               # PASSIVESRC — CT logs, passive DNS (6 sources)
+│   │   ├── asn.go                   # ASNMAP — ASN/CIDR BGP discovery
 │   │   ├── dns.go                   # FINGERPRINTER — subdomain enum, zone transfer
+│   │   ├── dnsextra.go              # AXFR utils, DNS message builder
+│   │   ├── dnsengine.go             # Raw-UDP DNS brute-force engine
+│   │   ├── takeover.go              # TAKEOVER + PERMUTE — takeover fingerprint, subdomain permute
+│   │   ├── discovery.go             # ARCHAEOLOGY, CORSTRACE, CLOUDSNIFF, BRUTEFORCE
+│   │   ├── httprobe.go              # HEARTBEAT — HTTP probe + favicon hash
 │   │   ├── webserver.go             # PROBESCAN — server fingerprint, TLS
 │   │   ├── metafiles.go             # METADATA — robots.txt, sitemap, security.txt
 │   │   ├── headers.go               # SENTRY — security headers, tech detection
 │   │   ├── content.go               # DEEPDIVE — HTML/JS analysis, secret scan
+│   │   ├── jsanalysis.go            # JSDEEP — LinkFinder-style JS endpoint extraction
+│   │   ├── api.go                   # APISCAN — GraphQL/Swagger/OpenAPI/REST/WS
+│   │   ├── saas.go                  # SAASENUM — 19 third-party platforms
+│   │   ├── crawler.go               # CRAWLER + RECON — web crawl, WHOIS/RDAP
 │   │   ├── portscan.go              # PORTSCAN — TCP scanner
-│   │   ├── discovery.go             # ARCHAEOLOGY, CORSTRACE, CLOUDSNIFF, BRUTEFORCE
-│   │   ├── crawler.go               # CRAWLER, RECON
+│   │   ├── surface.go               # Attack-surface summary aggregator
+│   │   ├── psl.go                   # Public Suffix List (Mozilla PSL)
 │   │   └── helpers.go               # Shared utils
 │   └── report/
 │       └── report.go                # JSON + Markdown report gen

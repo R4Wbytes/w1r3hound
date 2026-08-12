@@ -138,7 +138,7 @@ const helpFooter = `
   │                                                         │
   │  DEEP ANALYSIS:                                         │
   │  jsdeep       JS endpoint extraction (LinkFinder style) │
-  │  takeover     HTTP-signature subdomain takeover (28 svcs)│
+  │  takeover     HTTP-signature subdomain takeover (37 svcs)│
   │                                                         │
   │  "Listen long enough on the wire, and the target       │
   │   tells you everything it never meant to."            │
