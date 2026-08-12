@@ -290,6 +290,32 @@ func FetchBodyRL(client *http.Client, url, ua string, rl *RateLimiter) (string, 
 	return FetchBody(client, url, ua)
 }
 
+// FetchBodyCT is FetchBody that additionally returns the response Content-Type.
+// The crawler needs it to avoid running HTML link/form extraction over non-HTML
+// bodies (JS/CSS/JSON): framework bundles embed template literals like
+// href="{{...}}" that would otherwise be mistaken for real links.
+func FetchBodyCT(client *http.Client, url, ua string) (string, int, string, error) {
+	resp, err := DoRequest(client, "GET", url, ua)
+	if err != nil {
+		return "", 0, "", err
+	}
+	defer resp.Body.Close()
+	ct := resp.Header.Get("Content-Type")
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10 MB cap
+	if err != nil {
+		return "", resp.StatusCode, ct, err
+	}
+	return string(body), resp.StatusCode, ct, nil
+}
+
+// FetchBodyCTRL is FetchBodyCT with rate limiting.
+func FetchBodyCTRL(client *http.Client, url, ua string, rl *RateLimiter) (string, int, string, error) {
+	if rl != nil {
+		rl.Wait()
+	}
+	return FetchBodyCT(client, url, ua)
+}
+
 // NewPostRequest builds a POST request with a body and content type.
 func NewPostRequest(url, contentType, body, ua string) (*http.Request, error) {
 	req, err := http.NewRequest("POST", url, strings.NewReader(body))

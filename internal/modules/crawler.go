@@ -82,6 +82,16 @@ func RunCrawler(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 	log.Info("Starting crawl from %s (max %d pages)...", target, maxPages)
 
+	// Calibrate the SPA/catch-all shell up front. Single-page apps answer 200
+	// with the same app shell for every unknown path, so without this the
+	// crawler counts phantom pages — a seeded but non-existent sitemap.xml, or
+	// a template-literal link — as real. matches() is a no-op on servers that
+	// return proper 404s, so non-SPA targets are unaffected.
+	catchAll := calibrateCatchAll(client, target, cfg)
+	if catchAll.isCatchAll {
+		log.Warn("Catch-all/SPA detected (~%d bytes) — suppressing phantom pages", catchAll.bodyLen)
+	}
+
 	// Seed the queue with the target and common paths found elsewhere
 	queue = append(queue, target+"/", target+"/robots.txt", target+"/sitemap.xml")
 
@@ -107,20 +117,40 @@ func RunCrawler(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		visited[currentURL] = true
 		visitMu.Unlock()
 
-		body, status, err := core.FetchBodyRL(client, currentURL, cfg.UserAgent, cfg.RL)
+		body, status, ct, err := core.FetchBodyCTRL(client, currentURL, cfg.UserAgent, cfg.RL)
 		if err != nil || status >= 400 || len(body) == 0 {
 			return
 		}
 
+		// SPA catch-all suppression: drop any non-root page whose response is
+		// the app shell. This removes phantom pages such as a seeded but
+		// non-existent /sitemap.xml that a single-page app answers 200 with
+		// index.html. The target root itself is the real entry point and is
+		// always kept, even though it *is* the shell.
+		if cleanURL != target && catchAll.matches(status, len(body)) {
+			return
+		}
+
+		// Only HTML documents carry crawlable links, forms and inputs. Running
+		// the HTML regexes over JS/CSS/JSON bodies mines framework template
+		// literals (href="{{...}}", src="${...}") and stray <input> strings,
+		// fabricating phantom URLs, forms and parameters — jsdeep owns
+		// JavaScript endpoint extraction, not the crawler.
+		isHTML := isHTMLContentType(ct)
+
 		page := CrawledPage{URL: currentURL, StatusCode: status}
-		if m := titlePattern.FindStringSubmatch(body); len(m) > 1 {
-			page.Title = strings.TrimSpace(m[1])
+		if isHTML {
+			if m := titlePattern.FindStringSubmatch(body); len(m) > 1 {
+				page.Title = strings.TrimSpace(m[1])
+			}
 		}
 
 		visitMu.Lock()
 		result.Pages = append(result.Pages, page)
 		visitMu.Unlock()
 
+		// Query-string parameters are derived from the URL itself, so they are
+		// collected regardless of the response Content-Type.
 		if parsedURL, err := url.Parse(currentURL); err == nil {
 			visitMu.Lock()
 			for param := range parsedURL.Query() {
@@ -132,61 +162,68 @@ func RunCrawler(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			visitMu.Unlock()
 		}
 
-		links := linkPattern.FindAllStringSubmatch(body, -1)
 		var newURLs []string
-		for _, lm := range links {
-			href := strings.TrimSpace(lm[1])
-			if href == "" || strings.HasPrefix(href, "javascript:") || strings.HasPrefix(href, "mailto:") {
-				continue
-			}
-			resolved := resolveURL(currentURL, href)
-			resolvedParsed, err := url.Parse(resolved)
-			if err != nil {
-				continue
-			}
-			if resolvedParsed.Host == baseURL.Host {
-				clean := resolvedParsed.Scheme + "://" + resolvedParsed.Host + resolvedParsed.Path
-				visitMu.Lock()
-				shouldAdd := !visited[clean] && !visited[resolved]
-				visitMu.Unlock()
-				if shouldAdd {
-					newURLs = append(newURLs, clean)
+		if isHTML {
+			links := linkPattern.FindAllStringSubmatch(body, -1)
+			for _, lm := range links {
+				href := strings.TrimSpace(lm[1])
+				if href == "" || strings.HasPrefix(href, "javascript:") || strings.HasPrefix(href, "mailto:") {
+					continue
 				}
-			} else if resolvedParsed.Host != "" {
-				visitMu.Lock()
-				extLinks[resolved] = true
-				visitMu.Unlock()
+				// Reject client-side templating placeholders ({{...}}, ${...},
+				// <%...%>) that appear verbatim in inline framework templates.
+				if isTemplateURL(href) {
+					continue
+				}
+				resolved := resolveURL(currentURL, href)
+				resolvedParsed, err := url.Parse(resolved)
+				if err != nil {
+					continue
+				}
+				if resolvedParsed.Host == baseURL.Host {
+					clean := resolvedParsed.Scheme + "://" + resolvedParsed.Host + resolvedParsed.Path
+					visitMu.Lock()
+					shouldAdd := !visited[clean] && !visited[resolved]
+					visitMu.Unlock()
+					if shouldAdd {
+						newURLs = append(newURLs, clean)
+					}
+				} else if resolvedParsed.Host != "" {
+					visitMu.Lock()
+					extLinks[resolved] = true
+					visitMu.Unlock()
+				}
 			}
-		}
 
-		forms := formPattern.FindAllStringSubmatch(body, -1)
-		for _, fm := range forms {
-			formAttrs := fm[1]
-			formBody := fm[2]
-			fe := FormEntry{Page: currentURL, Method: "GET"}
-			if am := actionPattern.FindStringSubmatch(formAttrs); len(am) > 1 {
-				fe.Action = resolveURL(currentURL, am[1])
-			}
-			if mm := methodPattern.FindStringSubmatch(formAttrs); len(mm) > 1 {
-				fe.Method = strings.ToUpper(mm[1])
-			}
-			for _, pat := range []*regexp.Regexp{inputPattern, selectPattern, textareaPattern} {
-				inputs := pat.FindAllStringSubmatch(formBody, -1)
-				for _, im := range inputs {
-					if len(im) > 1 {
-						fe.Inputs = append(fe.Inputs, im[1])
-						visitMu.Lock()
-						if !paramSet[im[1]] {
-							paramSet[im[1]] = true
-							result.Parameters = append(result.Parameters, im[1])
+			forms := formPattern.FindAllStringSubmatch(body, -1)
+			for _, fm := range forms {
+				formAttrs := fm[1]
+				formBody := fm[2]
+				fe := FormEntry{Page: currentURL, Method: "GET"}
+				if am := actionPattern.FindStringSubmatch(formAttrs); len(am) > 1 {
+					fe.Action = resolveURL(currentURL, am[1])
+				}
+				if mm := methodPattern.FindStringSubmatch(formAttrs); len(mm) > 1 {
+					fe.Method = strings.ToUpper(mm[1])
+				}
+				for _, pat := range []*regexp.Regexp{inputPattern, selectPattern, textareaPattern} {
+					inputs := pat.FindAllStringSubmatch(formBody, -1)
+					for _, im := range inputs {
+						if len(im) > 1 {
+							fe.Inputs = append(fe.Inputs, im[1])
+							visitMu.Lock()
+							if !paramSet[im[1]] {
+								paramSet[im[1]] = true
+								result.Parameters = append(result.Parameters, im[1])
+							}
+							visitMu.Unlock()
 						}
-						visitMu.Unlock()
 					}
 				}
+				visitMu.Lock()
+				result.Forms = append(result.Forms, fe)
+				visitMu.Unlock()
 			}
-			visitMu.Lock()
-			result.Forms = append(result.Forms, fe)
-			visitMu.Unlock()
 		}
 
 		apiPatterns := []string{"/api/", "/v1/", "/v2/", "/v3/", "/graphql", "/rest/"}
@@ -286,6 +323,20 @@ func RunCrawler(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		Severity: core.SevInfo,
 		Data:     result,
 	})
+}
+
+// isTemplateURL reports whether an href/src/action value is really a client-side
+// templating placeholder rather than a link. Angular/Vue interpolation
+// ({{href}}), JSX/ES template expressions (${path}) and ERB/JSP scriptlets
+// (<%= url %>) appear verbatim in framework bundles and inline templates;
+// resolving them yields phantom URLs like http://host/{{href}} that a catch-all
+// SPA happily answers 200. Raw braces are not legal in a URL path unescaped
+// (RFC 3986), so their presence is a reliable template-literal tell.
+func isTemplateURL(href string) bool {
+	return strings.ContainsAny(href, "{}") ||
+		strings.Contains(href, "${") ||
+		strings.Contains(href, "<%") ||
+		strings.Contains(href, "%>")
 }
 
 // ══════════════════════════════════════════════
