@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -401,6 +402,15 @@ func looksGenericBucketName(name string) bool {
 
 func RunCloudStorage(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	log.Module("CLOUDSNIFF // Cloud Storage Enumeration")
+
+	// IP-literal targets have no bucket-name relationship to derive: from
+	// 127.0.0.1 the base name becomes "127" and the module probes
+	// 127.s3.amazonaws.com et al — guaranteed false positives (verified vs a
+	// localhost Juice Shop scan reporting 4 phantom "buckets").
+	if net.ParseIP(cfg.Domain) != nil {
+		log.Info("Target is an IP literal — cloud bucket names cannot be derived, skipping")
+		return
+	}
 
 	client := core.NewHTTPClient(cfg)
 	domain := cfg.Domain

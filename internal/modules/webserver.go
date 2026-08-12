@@ -222,10 +222,20 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 		}
 	}
 
+	// Title fallback: an empty Server header (Express/Node default, CDN-stripped)
+	// previously rendered as "Web server fingerprint: " — a useless report line.
+	fpTitle := result.Server
+	if fpTitle == "" {
+		if result.PoweredBy != "" {
+			fpTitle = "(no Server header) X-Powered-By: " + result.PoweredBy
+		} else {
+			fpTitle = "(no Server header — server suppresses banner)"
+		}
+	}
 	report.Add(core.Finding{
 		Module:   "webserver",
 		WSTG:     "WSTG-INFO-02",
-		Title:    fmt.Sprintf("Web server fingerprint: %s", result.Server),
+		Title:    fmt.Sprintf("Web server fingerprint: %s", fpTitle),
 		Severity: core.SevInfo,
 		Data:     result,
 	})

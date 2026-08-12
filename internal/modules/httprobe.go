@@ -72,6 +72,17 @@ func RunHTTProbe(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		return
 	}
 
+	// If the operator's own target carries an explicit port or scheme
+	// (http://127.0.0.1:3000, https://host:8443), probing scheme://host on
+	// default ports misses it entirely — 443/80 get connection-refused while
+	// the real app sits on :3000. Probe the exact target URL first, then the
+	// scheme-expanded host list as before. Verified against OWASP Juice Shop
+	// on 127.0.0.1:3000: previously reported "Live hosts: 0/1" on a live app.
+	targetURL := normalizeTarget(cfg.Target)
+	hasExplicitTarget := strings.Contains(cfg.Target, "://") &&
+		(strings.Contains(strings.SplitN(strings.SplitN(cfg.Target, "://", 2)[1], "/", 2)[0], ":") ||
+			strings.HasPrefix(cfg.Target, "http://"))
+
 	log.Info("Probing %d hosts for HTTP/HTTPS liveness...", len(targets))
 
 	client := core.NewHTTPClient(cfg)
@@ -79,12 +90,65 @@ func RunHTTProbe(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		FaviconHashes: make(map[string]string),
 		TotalProbed:   len(targets),
 	}
+	if hasExplicitTarget {
+		result.TotalProbed++
+	}
 
 	var (
 		mu  sync.Mutex
 		wg  sync.WaitGroup
 		sem = make(chan struct{}, cfg.Concurrency)
 	)
+
+	probeOne := func(url string) {
+		resp, err := core.DoRequestRL(client, "GET", url, cfg.UserAgent, cfg.RL)
+		if err != nil {
+			return
+		}
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+		resp.Body.Close()
+		body := string(bodyBytes)
+
+		lh := LiveHost{
+			URL:        url,
+			StatusCode: resp.StatusCode,
+			Server:     resp.Header.Get("Server"),
+			ContentLen: len(bodyBytes),
+		}
+
+		if m := probeTitleRe.FindStringSubmatch(body); len(m) > 1 {
+			lh.Title = strings.TrimSpace(strings.ReplaceAll(m[1], "\n", " "))
+			lh.Title = truncate(lh.Title, 80)
+		}
+
+		lh.Tech = detectTechInline(resp.Header, body)
+
+		if strings.HasPrefix(url, "https://") {
+			if fh := computeFavicon(client, url, cfg); fh != "" {
+				lh.FaviconHash = fh
+				mu.Lock()
+				result.FaviconHashes[url] = fh
+				mu.Unlock()
+			}
+		}
+
+		mu.Lock()
+		result.LiveHosts = append(result.LiveHosts, lh)
+		mu.Unlock()
+
+		log.Info("  [%d] %-45s %s", resp.StatusCode, url, truncate(lh.Title, 40))
+	}
+
+	if hasExplicitTarget {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer core.RecoverWorker(log, "httprobe")
+			defer wg.Done()
+			defer func() { <-sem }()
+			probeOne(targetURL)
+		}()
+	}
 
 	for _, host := range targets {
 		for _, scheme := range []string{"https", "http"} {

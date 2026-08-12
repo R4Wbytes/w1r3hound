@@ -2,6 +2,7 @@ package modules
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 
@@ -79,6 +80,14 @@ func RunSaaS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	client := core.NewHTTPClient(cfg)
 	// Use the apex domain (eTLD+1) so scanning "docs.anthropic.com"
 	// checks "anthropic.zendesk.com", not "docs.zendesk.com".
+	// IP targets have no org name to enumerate — deriving one from
+	// "127.0.0.1" yields org "0" and probes 0.okta.com, gitlab.com/0,
+	// etc: pure false positives (verified vs a Juice Shop instance on
+	// 127.0.0.1:3000 reporting 10 phantom "SaaS platforms").
+	if net.ParseIP(cfg.Domain) != nil {
+		log.Info("Target is an IP literal — SaaS org enumeration not applicable, skipping")
+		return
+	}
 	apex := extractApexDomain(cfg.Domain)
 	orgName := strings.Split(apex, ".")[0]
 	log.Info("Checking SaaS platforms for org '%s'...", orgName)

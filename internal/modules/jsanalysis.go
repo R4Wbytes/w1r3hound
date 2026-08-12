@@ -29,11 +29,23 @@ type JSAnalysisResult struct {
 
 // LinkFinder's proven regex for extracting endpoints from JS.
 // Matches quoted strings that look like paths, URLs, or API routes.
-var linkFinderRe = regexp.MustCompile(`(?:"|')(` +
+// Extended with backtick template literals: modern frameworks (Angular/React/
+// Vue minified bundles) build API routes as template strings. Juice Shop main.js
+// holds `/api/Feedbacks`-style paths the quote-only regex missed entirely
+// (2 endpoints found in a 1.2 MB bundle; dozens exist).
+// Delimiter alternation for JS string literals: double quote, single quote,
+// or backtick (template literals — Angular/React/Vue minified bundles build
+// API routes as template strings; the quote-only original missed them all).
+var linkFinderDelims = "\"|'|`"
+var linkFinderRe = regexp.MustCompile("(?:" + linkFinderDelims + ")(" +
 	`(?:(?:https?:)?//[^"'/]+)?` + // optional scheme+host
 	`/[a-zA-Z0-9_\-/\.]+` + // path
 	`(?:\?[a-zA-Z0-9_\-=&%\.]*)?` + // optional query
-	`)(?:"|')`)
+	")(?:" + linkFinderDelims + ")")
+
+// tplInterpRe strips ${...} interpolations so `/api/${id}`-style template
+// hits do not poison the endpoint list.
+var tplInterpRe = regexp.MustCompile(`\$\{[^}]*\}`)
 
 // Cloud resource URL patterns worth flagging
 var cloudURLRe = regexp.MustCompile(`https?://[a-zA-Z0-9\.\-]+\.(?:s3[\.\-][a-z0-9\-]*\.amazonaws\.com|blob\.core\.windows\.net|storage\.googleapis\.com|firebaseio\.com|cloudfront\.net|digitaloceanspaces\.com)[^"'\s]*`)
@@ -103,7 +115,7 @@ func RunJSAnalysis(cfg *core.Config, report *core.ReconReport, log *core.Logger)
 				if len(m) < 2 {
 					continue
 				}
-				ep := m[1]
+				ep := tplInterpRe.ReplaceAllString(m[1], "")
 				if isNoiseEndpoint(ep) {
 					continue
 				}
