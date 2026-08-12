@@ -187,3 +187,80 @@ func TestClusterFilter_KeepsContentClassified(t *testing.T) {
 		t.Error("the shell-identical cluster should have been filtered as soft-404s")
 	}
 }
+
+// Iteration 9 (WSTG-CLNT-07): corstrace flagged only the dangerous CORS cases
+// (reflected origin, wildcard+credentials, null) and reported "no
+// misconfiguration" for a plain wildcard Access-Control-Allow-Origin: *. Juice
+// Shop uses app.use(cors()) → a literal * on every route; a CORS scan should
+// surface that as a LOW advisory, not silence.
+func corsFindingWithTitle(r *core.ReconReport, substr string) *core.Finding {
+	for i := range r.Findings {
+		if r.Findings[i].Module == "cors" && strings.Contains(r.Findings[i].Title, substr) {
+			return &r.Findings[i]
+		}
+	}
+	return nil
+}
+
+func TestRunCORS_WildcardReportedLow(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*") // literal wildcard, no credentials
+	}))
+	defer srv.Close()
+
+	cfg := core.DefaultConfig()
+	cfg.Target = srv.URL
+	report := core.NewReport(srv.URL)
+	RunCORS(cfg, report, core.NewLogger(false))
+
+	f := corsFindingWithTitle(report, "Permissive CORS")
+	if f == nil {
+		t.Fatal("expected a permissive-CORS advisory for Access-Control-Allow-Origin: *")
+	}
+	if f.Severity != core.SevLow {
+		t.Errorf("plain wildcard CORS should be LOW, got %s", f.Severity)
+	}
+	// Must NOT be escalated to the HIGH reflected-origin finding.
+	if corsFindingWithTitle(report, "CORS misconfiguration") != nil {
+		t.Error("plain wildcard (no credentials) must not be reported as a HIGH misconfiguration")
+	}
+}
+
+func TestRunCORS_NoHeadersNoFinding(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	defer srv.Close()
+
+	cfg := core.DefaultConfig()
+	cfg.Target = srv.URL
+	report := core.NewReport(srv.URL)
+	RunCORS(cfg, report, core.NewLogger(false))
+
+	if len(report.Findings) != 0 {
+		t.Errorf("a server with no CORS headers must yield no finding, got %d", len(report.Findings))
+	}
+}
+
+// Regression guard: the wildcard branch must not weaken the HIGH path — a server
+// that reflects an untrusted origin AND allows credentials is still critical.
+func TestRunCORS_ReflectedWithCredentialsStillHigh(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if o := r.Header.Get("Origin"); o != "" {
+			w.Header().Set("Access-Control-Allow-Origin", o) // reflect
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+	}))
+	defer srv.Close()
+
+	cfg := core.DefaultConfig()
+	cfg.Target = srv.URL
+	report := core.NewReport(srv.URL)
+	RunCORS(cfg, report, core.NewLogger(false))
+
+	f := corsFindingWithTitle(report, "CORS misconfiguration")
+	if f == nil {
+		t.Fatal("expected HIGH CORS misconfiguration for reflected origin + credentials")
+	}
+	if f.Severity != core.SevHigh {
+		t.Errorf("reflected origin + credentials must stay HIGH, got %s", f.Severity)
+	}
+}

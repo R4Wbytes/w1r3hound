@@ -234,6 +234,7 @@ func RunCORS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		{"https://sub." + cfg.Domain, "subdomain"},
 	}
 
+	wildcardOpen := false
 	for _, o := range origins {
 		req, err := http.NewRequest("GET", target, nil)
 		if err != nil {
@@ -271,6 +272,12 @@ func RunCORS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			} else {
 				tr.Issue = fmt.Sprintf("Reflects untrusted origin without credentials (%s)", o.Desc)
 			}
+		} else if acao == "*" {
+			// A literal wildcard (no credentials): permissive but not exploitable
+			// for credentialed cross-origin theft. Recorded for a LOW advisory
+			// below rather than the HIGH reflected-origin finding — a CORS scan
+			// should still surface it, not report "no misconfiguration".
+			wildcardOpen = true
 		}
 
 		result.Tests = append(result.Tests, tr)
@@ -279,7 +286,8 @@ func RunCORS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		}
 	}
 
-	if result.Vulnerable {
+	switch {
+	case result.Vulnerable:
 		report.Add(core.Finding{
 			Module:      "cors",
 			WSTG:        "WSTG-CLNT-07",
@@ -288,7 +296,17 @@ func RunCORS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			Description: "The application reflects untrusted origins, potentially allowing cross-origin data theft.",
 			Data:        result,
 		})
-	} else {
+	case wildcardOpen:
+		log.Warn("Permissive wildcard CORS (Access-Control-Allow-Origin: *)")
+		report.Add(core.Finding{
+			Module:      "cors",
+			WSTG:        "WSTG-CLNT-07",
+			Title:       "Permissive CORS policy (wildcard Access-Control-Allow-Origin)",
+			Severity:    core.SevLow,
+			Description: "The server returns Access-Control-Allow-Origin: *, so any website can read its non-credentialed responses cross-origin. Acceptable for wholly public content, but a data-exposure risk for any endpoint that returns sensitive information based on network position or non-cookie authentication.",
+			Data:        result,
+		})
+	default:
 		log.Info("No CORS misconfiguration detected")
 	}
 }
