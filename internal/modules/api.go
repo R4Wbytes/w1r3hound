@@ -130,6 +130,17 @@ func RunAPI(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			// catch-all server is meaningless.
 			log.Info("GraphQL endpoint found (introspection off): %s", url)
 			result.GraphQLEndpoints = append(result.GraphQLEndpoints, gf)
+		} else if strings.Contains(body, "__schema") ||
+			strings.Contains(body, "\"graphql\"") ||
+			strings.Contains(strings.ToLower(body), "graphql") {
+			// 200 + GraphQL markers in the body: the endpoint exists but
+			// introspection is off/blocked (e.g. Apollo landing page, Yoga,
+			// gateways answering 200 with an error envelope). Previously this
+			// fell through both branches and the endpoint was never reported —
+			// a false negative on exactly the hardened targets where knowing
+			// the endpoint exists still matters.
+			log.Info("GraphQL endpoint found (introspection off): %s", url)
+			result.GraphQLEndpoints = append(result.GraphQLEndpoints, gf)
 		}
 	}
 

@@ -42,8 +42,12 @@ var secretPatterns = []struct {
 	{"AWS Secret Key", regexp.MustCompile(`(?i)aws_secret_access_key\s*[:=]\s*['"]?([A-Za-z0-9/+=]{40})`)},
 	{"Google API Key", regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`)},
 	{"Google OAuth ID", regexp.MustCompile(`[0-9]+-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com`)},
-	{"GitHub Token", regexp.MustCompile(`gh[pousr]_[A-Za-z0-9_]{36,255}`)},
 	{"GitHub Classic Token", regexp.MustCompile(`ghp_[A-Za-z0-9]{36}`)},
+	// gh[ousr]_ covers fine-grained PATs, OAuth, user-to-server and
+	// refresh tokens. ghp_ is intentionally NOT in this class: the classic
+	// pattern above matches those first, and including it here would
+	// double-report every classic PAT under two rule names.
+	{"GitHub Token (fine-grained/OAuth/app)", regexp.MustCompile(`gh[ousr]_[A-Za-z0-9_]{36,255}`)},
 	{"Slack Token", regexp.MustCompile(`xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,34}`)},
 	{"Slack Webhook", regexp.MustCompile(`https://hooks\.slack\.com/services/T[a-zA-Z0-9_]{8}/B[a-zA-Z0-9_]{8}/[a-zA-Z0-9_]{24}`)},
 	{"Stripe Secret Key", regexp.MustCompile(`sk_live_[0-9a-zA-Z]{24,99}`)},

@@ -322,6 +322,23 @@ func main() {
 		return false
 	}
 
+	// If every requested protocol is active-only and -passive filtered them
+	// all out, the run would produce an empty report with no explanation —
+	// the per-module "Skipping in passive mode" lines are unreachable because
+	// shouldRun never lets execution reach the modules. Warn once up front.
+	if cfg.Passive {
+		ranAny := false
+		for _, m := range cfg.Modules {
+			if m == "all" || !activeModules[m] {
+				ranAny = true
+				break
+			}
+		}
+		if !ranAny {
+			log.Warn("All requested protocols are active-only and are skipped in -passive mode; nothing to do")
+		}
+	}
+
 	// ── Phase 0: Passive OSINT (no traffic to target) ──
 	if shouldRun("whois") {
 		safeRun(log, "whois", func() { modules.RunWhois(cfg, r, log) })

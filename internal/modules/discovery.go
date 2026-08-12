@@ -798,9 +798,15 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 				return
 			}
 
-			// Read body for soft-404 comparison
-			bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+			// Read body for soft-404 comparison. A truncated/failed read must
+			// not be classified: a partial body has the wrong length and hash,
+			// which can flip the soft-404 comparison and produce a false
+			// positive on flaky connections.
+			bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
 			resp.Body.Close()
+			if readErr != nil {
+				return
+			}
 			bodyLen := len(bodyBytes)
 			bodyStr := string(bodyBytes)
 

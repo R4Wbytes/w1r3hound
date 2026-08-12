@@ -99,7 +99,7 @@ func generateMarkdown(r *core.ReconReport) string {
 	}
 
 	sb.WriteString("## Summary\n\n")
-	sb.WriteString(fmt.Sprintf("| Severity | Count |\n|----------|-------|\n"))
+	sb.WriteString("| Severity | Count |\n|----------|-------|\n")
 	for _, sev := range []core.Severity{core.SevCritical, core.SevHigh, core.SevMedium, core.SevLow, core.SevInfo} {
 		if counts[sev] > 0 {
 			sb.WriteString(fmt.Sprintf("| %s | %d |\n", sev, counts[sev]))

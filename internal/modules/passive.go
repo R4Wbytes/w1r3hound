@@ -134,9 +134,7 @@ func RunPassive(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		}
 		var subs []string
 		for _, e := range entries {
-			for _, name := range strings.Split(e.NameValue, "\n") {
-				subs = append(subs, name)
-			}
+			subs = append(subs, strings.Split(e.NameValue, "\n")...)
 		}
 		add("crt.sh", subs)
 	}()

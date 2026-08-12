@@ -209,9 +209,7 @@ func RunCrawler(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 		// Enqueue new URLs
 		queueMu.Lock()
-		for _, u := range newURLs {
-			queue = append(queue, u)
-		}
+		queue = append(queue, newURLs...)
 		queueMu.Unlock()
 	}
 

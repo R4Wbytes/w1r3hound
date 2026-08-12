@@ -153,8 +153,12 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 		if oidcStatus == 200 && strings.Contains(oidcBody, "grant_types") {
 			lowerBody := strings.ToLower(oidcBody)
 			var dangerousGrants []string
-			if strings.Contains(lowerBody, `"password"`) || strings.Contains(lowerBody, `"password"`) {
+			if strings.Contains(lowerBody, `"password"`) ||
+				strings.Contains(lowerBody, `urn:ietf:params:oauth:grant-type:password`) {
 				dangerousGrants = append(dangerousGrants, "password (resource owner)")
+			}
+			if strings.Contains(lowerBody, `"client_credentials"`) {
+				dangerousGrants = append(dangerousGrants, "client_credentials (machine-to-machine)")
 			}
 			if strings.Contains(lowerBody, `"implicit"`) {
 				dangerousGrants = append(dangerousGrants, "implicit (deprecated)")
