@@ -577,12 +577,25 @@ type DirEntry struct {
 	StatusCode int    `json:"status_code"`
 	Size       int64  `json:"size"`
 	Redirect   string `json:"redirect,omitempty"`
+	// Kind is a content-derived classification for a discovered 200 response
+	// (e.g. "prometheus"), set by inspecting the body the soft-404 check already
+	// read. Empty for ordinary paths. Lets the report flag *what* a path is, not
+	// just that it exists — path-string matching alone misses e.g. /metrics.
+	Kind string `json:"kind,omitempty"`
 
 	// bodyHash is the FNV hash of the response body with the requested path
 	// stripped out. It lets the post-scan cluster filter tell a genuine file
 	// (different body) from the catch-all shell (identical body) even when the
 	// sizes match. Unexported → never serialised into the JSON report.
 	bodyHash uint32
+}
+
+// promHit records a discovered Prometheus metrics endpoint and the categories of
+// internal data it leaks.
+type promHit struct {
+	Path    string   `json:"path"`
+	Metrics int      `json:"metric_count"`
+	Leaks   []string `json:"leaks,omitempty"`
 }
 
 // stripPathHash hashes a body after removing the requested path from it, so
@@ -595,6 +608,42 @@ type DirEntry struct {
 func stripPathHash(body, path string) uint32 {
 	stripped := strings.ReplaceAll(body, path, "")
 	return simpleHash([]byte(stripped))
+}
+
+// promTypeRe matches a well-formed Prometheus TYPE comment line ("# TYPE <name>
+// <counter|gauge|histogram|summary|untyped>"). Requiring the metric type keyword
+// keeps a stray "# TYPE" in prose/markdown from being mistaken for an endpoint.
+var promTypeRe = regexp.MustCompile(`(?m)^# TYPE \S+ (counter|gauge|histogram|summary|untyped)\b`)
+
+// isPrometheusMetrics reports whether a body is the Prometheus text exposition
+// format. It demands several well-formed TYPE lines so only a real metrics
+// endpoint qualifies — never an HTML page or a doc that happens to contain "#".
+func isPrometheusMetrics(body string) bool {
+	return len(promTypeRe.FindAllString(body, 3)) >= 3
+}
+
+// prometheusExposure summarises a metrics body: how many metrics it publishes
+// and which categories of internal data leak (version → CVE mapping, process
+// internals, request stats). Drives an actionable finding description.
+func prometheusExposure(body string) (metricCount int, leaks []string) {
+	metricCount = len(promTypeRe.FindAllString(body, -1))
+	checks := []struct{ needle, label string }{
+		{"nodejs_version_info", "Node.js runtime version"},
+		{"_version_info", "application version"},
+		{"process_cpu_", "process CPU usage"},
+		{"process_resident_memory", "process memory footprint"},
+		{"process_start_time", "process start time / uptime"},
+		{"nodejs_heap", "V8 heap internals"},
+		{"http_request", "HTTP request statistics"},
+	}
+	seen := map[string]bool{}
+	for _, c := range checks {
+		if !seen[c.label] && strings.Contains(body, c.needle) {
+			seen[c.label] = true
+			leaks = append(leaks, c.label)
+		}
+	}
+	return metricCount, leaks
 }
 
 // Embedded wordlist for common paths — admin panels, backup files, configs
@@ -786,6 +835,7 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	}
 
 	result := DirBruteResult{}
+	var promHits []promHit
 	var (
 		mu  sync.Mutex
 		wg  sync.WaitGroup
@@ -836,8 +886,18 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 					StatusCode: resp.StatusCode,
 					Size:       int64(bodyLen),
 				}
+				var ph *promHit
 				if resp.StatusCode == 200 {
 					entry.bodyHash = stripPathHash(bodyStr, p)
+					// Classify by content while the body is still in hand: a path's
+					// name (/metrics) doesn't reveal it's a live Prometheus endpoint,
+					// but its body does. This turns a generic "path found" into an
+					// information-disclosure finding.
+					if isPrometheusMetrics(bodyStr) {
+						entry.Kind = "prometheus"
+						mc, leaks := prometheusExposure(bodyStr)
+						ph = &promHit{Path: p, Metrics: mc, Leaks: leaks}
+					}
 				}
 				if resp.StatusCode == 301 || resp.StatusCode == 302 {
 					entry.Redirect = resp.Header.Get("Location")
@@ -845,6 +905,9 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 				mu.Lock()
 				result.Found = append(result.Found, entry)
+				if ph != nil {
+					promHits = append(promHits, *ph)
+				}
 				mu.Unlock()
 
 				// The status label is plain text: the logger sanitises string
@@ -875,6 +938,34 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	result.Found = filterCatchAll403s(result.Found, log)
 	if diff := beforeCluster - len(result.Found); diff > 0 {
 		log.Info("Cluster analysis removed %d additional soft-404/403 responses", diff)
+	}
+
+	// ── Prometheus metrics exposure (WSTG-CONF-02) ──
+	// Report only endpoints whose entry survived soft-404/cluster filtering, so
+	// the finding stays consistent with the discovered-paths list.
+	if len(promHits) > 0 {
+		survived := make(map[string]bool, len(result.Found))
+		for _, e := range result.Found {
+			survived[e.Path] = true
+		}
+		for _, h := range promHits {
+			if !survived[h.Path] {
+				continue
+			}
+			desc := fmt.Sprintf("Prometheus metrics endpoint at %s is reachable without authentication (%d metrics published).", h.Path, h.Metrics)
+			if len(h.Leaks) > 0 {
+				desc += " Leaks: " + strings.Join(h.Leaks, ", ") + "."
+			}
+			log.Warn("Prometheus metrics exposed: %s (%d metrics)", h.Path, h.Metrics)
+			report.Add(core.Finding{
+				Module:      "dirbrute",
+				WSTG:        "WSTG-CONF-02",
+				Title:       fmt.Sprintf("Prometheus metrics exposed without authentication: %s", h.Path),
+				Severity:    core.SevMedium,
+				Description: desc,
+				Data:        h,
+			})
+		}
 	}
 
 	// Categorize findings

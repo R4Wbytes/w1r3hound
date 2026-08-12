@@ -2,6 +2,7 @@ package modules
 
 import (
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -66,6 +67,14 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 				Description: "Disallowed paths may reveal sensitive directories.",
 				Data:        rd.Disallowed,
 			})
+			// A robots.txt Disallow list is the site owner's own inventory of
+			// paths worth hiding — the highest-signal recon leads on the target.
+			// Verify each one instead of merely reporting the hint: a reachable
+			// auto-indexed directory behind a Disallow is a real disclosure. (On
+			// Juice Shop this turns the bare "/ftp is disallowed" note into the
+			// actual finding — /ftp is a live listing exposing *.bak backups and
+			// a KeePass DB.)
+			probeRobotsDisallowed(client, cfg, target, rd.Disallowed, report, log)
 		}
 	} else {
 		log.Debug("robots.txt not found or empty")
@@ -320,4 +329,140 @@ func extractSitemapURLs(body string) []string {
 		}
 	}
 	return urls
+}
+
+// ── robots.txt Disallow verification (WSTG-CONF-04) ──
+
+// dirListingHrefRe pulls entry names out of an HTML directory listing. It skips
+// Apache/serve-index sort links (href="?C=N;O=D") via the leading [^"?].
+var dirListingHrefRe = regexp.MustCompile(`(?i)<a\s+[^>]*href="([^"?][^"]*)"`)
+
+// sensitiveListingExts are suffixes whose presence in a public directory listing
+// is a genuine information-disclosure problem: backups, archives, secret stores,
+// VCS artefacts, byte-compiled code.
+var sensitiveListingExts = []string{
+	".bak", ".old", ".swp", ".orig", ".save", ".backup",
+	".sql", ".db", ".sqlite", ".kdbx",
+	".zip", ".tar", ".tgz", ".gz", ".rar", ".7z",
+	".key", ".pem", ".p12", ".pfx", ".env", ".pyc", ".git",
+}
+
+// isDirectoryListing reports whether an HTML body is an auto-generated directory
+// index — Apache/nginx autoindex or the Node serve-index used by Express apps
+// like Juice Shop. A listing hands an attacker every filename in the directory,
+// which is the whole point of verifying robots.txt Disallow entries.
+func isDirectoryListing(body string) bool {
+	lower := strings.ToLower(body)
+	if strings.Contains(lower, "<title>index of /") || strings.Contains(lower, "<h1>index of /") {
+		return true // Apache / nginx autoindex
+	}
+	if strings.Contains(lower, "listing directory") {
+		return true // Node serve-index <title>listing directory /ftp/</title>
+	}
+	if strings.Contains(lower, `id="files"`) && strings.Contains(lower, "icon-directory") {
+		return true // serve-index tile/detail view markup
+	}
+	return false
+}
+
+// extractListingEntries returns the de-duplicated entry names from a directory
+// listing, dropping the parent-directory link, breadcrumb links and sort links.
+func extractListingEntries(body string) []string {
+	var entries []string
+	seen := map[string]bool{}
+	for _, m := range dirListingHrefRe.FindAllStringSubmatch(body, -1) {
+		e := strings.TrimSpace(m[1])
+		e = strings.TrimPrefix(e, "./")
+		e = strings.TrimSuffix(e, "/")
+		// Relative leaf names only: breadcrumb/parent links are absolute ("/ftp")
+		// or "." / "..", external links start with a scheme.
+		if e == "" || e == "." || e == ".." || strings.HasPrefix(e, "/") ||
+			strings.HasPrefix(e, "http://") || strings.HasPrefix(e, "https://") {
+			continue
+		}
+		if seen[e] {
+			continue
+		}
+		seen[e] = true
+		entries = append(entries, e)
+	}
+	return entries
+}
+
+// sensitiveListingFiles returns the subset of listing entries that look like
+// backups, archives, secret stores or VCS artefacts.
+func sensitiveListingFiles(entries []string) []string {
+	var out []string
+	for _, e := range entries {
+		lower := strings.ToLower(e)
+		for _, ext := range sensitiveListingExts {
+			if strings.HasSuffix(lower, ext) {
+				out = append(out, e)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// probeRobotsDisallowed fetches each path a robots.txt Disallow-lists and reports
+// the reachable directory listings among them. It deliberately reports only
+// listings (content-verified, so the SPA app-shell served for any path can never
+// be mistaken for one) rather than every accessible path, since robots.txt is
+// advisory and a plain 200 behind a Disallow is expected, not a finding.
+func probeRobotsDisallowed(client *http.Client, cfg *core.Config, target string, disallowed []string, report *core.ReconReport, log *core.Logger) {
+	const maxProbe = 25
+	seen := map[string]bool{}
+	probed := 0
+	for _, raw := range disallowed {
+		if probed >= maxProbe {
+			break
+		}
+		p := strings.TrimSpace(raw)
+		// Pattern Disallow entries ("/*.json$", "/search?q=") aren't concrete
+		// fetchable paths.
+		if p == "" || p == "/" || strings.ContainsAny(p, "*$?") {
+			continue
+		}
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + p
+		}
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		probed++
+
+		// Probe the directory form (trailing slash). serve-index/autoindex emit
+		// clean relative entry names ("package.json.bak") for "/ftp/" but base
+		// them on the parent ("ftp/package.json.bak", plus a "." self-link) when
+		// the slash is missing. Redirect-following makes this a no-op on servers
+		// that 301 "/ftp" → "/ftp/".
+		probeURL := target + p
+		if !strings.HasSuffix(probeURL, "/") {
+			probeURL += "/"
+		}
+		body, status, err := core.FetchBodyRL(client, probeURL, cfg.UserAgent, cfg.RL)
+		if err != nil || status != 200 || len(body) == 0 || !isDirectoryListing(body) {
+			continue
+		}
+		entries := extractListingEntries(body)
+		sensitive := sensitiveListingFiles(entries)
+		sev := core.SevMedium
+		desc := fmt.Sprintf("Directory listing at %s (disclosed via robots.txt Disallow) exposes %d entries.", p, len(entries))
+		if len(sensitive) > 0 {
+			sev = core.SevHigh
+			desc = fmt.Sprintf("Directory listing at %s (disclosed via robots.txt Disallow) exposes %d entries, including %d sensitive file(s): %s.",
+				p, len(entries), len(sensitive), strings.Join(sensitive, ", "))
+		}
+		log.Warn("Directory listing enabled at %s — %d entries (%d sensitive)", p, len(entries), len(sensitive))
+		report.Add(core.Finding{
+			Module:      "metafiles",
+			WSTG:        "WSTG-CONF-04",
+			Title:       fmt.Sprintf("Directory listing enabled at %s", p),
+			Severity:    sev,
+			Description: desc,
+			Data:        entries,
+		})
+	}
 }
