@@ -214,42 +214,74 @@ func RunAPI(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		}
 	}
 
-	// ── 3. REST API versioning discovery ──
-	log.Info("Probing REST API versions...")
-	versionPaths := []string{"/api/v1", "/api/v2", "/api/v3", "/api/v4",
-		"/v1", "/v2", "/v3", "/rest/v1", "/rest/v2", "/api/1.0", "/api/2.0"}
-	for _, vp := range versionPaths {
-		url := target + vp
+	// ── 3. REST API versioning & base-path discovery ──
+	log.Info("Probing REST API namespaces...")
+
+	// Probe unversioned base paths first. When a base returns 500 (Express-style
+	// framework error for missing entity), skip its versioned children — they
+	// hit the same catch-all error handler and produce noise.
+	type apiProbe struct {
+		Path string
+		Base string // parent prefix: if Base is live, skip this child
+	}
+	apiProbes := []apiProbe{
+		// Base paths (no parent — always probed)
+		{"/api", ""},
+		{"/rest", ""},
+		{"/b2b/v2", ""},
+		// Versioned children (suppressed when parent base is live)
+		{"/api/v1", "/api"},
+		{"/api/v2", "/api"},
+		{"/api/v3", "/api"},
+		{"/api/v4", "/api"},
+		{"/rest/v1", "/rest"},
+		{"/rest/v2", "/rest"},
+		{"/api/1.0", "/api"},
+		{"/api/2.0", "/api"},
+		// Top-level version prefixes (no parent)
+		{"/v1", ""},
+		{"/v2", ""},
+		{"/v3", ""},
+	}
+	liveBase := make(map[string]bool) // which base paths responded as real APIs
+	for _, p := range apiProbes {
+		if p.Base != "" && liveBase[p.Base] {
+			log.Debug("Skipping %s (parent %s already detected)", p.Path, p.Base)
+			continue
+		}
+		url := target + p.Path
 		body, status, err := core.FetchBodyRL(client, url, cfg.UserAgent, cfg.RL)
 		if err != nil {
 			continue
 		}
-		// A 401/403 is a strong signal the namespace exists and is protected.
-		// A 200, however, is worthless on a catch-all/SPA server that serves the
-		// same HTML shell for every path — require it to (a) not match the shell
-		// and (b) actually look like an API response, not an HTML page.
 		exists := false
 		switch status {
 		case 401, 403:
 			exists = true
+		case 500:
+			if !catchAll.matches(status, len(body)) {
+				exists = true
+			}
 		case 200:
 			if !catchAll.matches(status, len(body)) && looksLikeAPIResponse(body) {
 				exists = true
 			}
 		}
 		if exists {
-			result.RESTVersions = append(result.RESTVersions, fmt.Sprintf("%s (%d)", vp, status))
-			log.Info("REST version namespace: %s [%d]", vp, status)
+			result.RESTVersions = append(result.RESTVersions, fmt.Sprintf("%s (%d)", p.Path, status))
+			log.Info("REST API namespace: %s [%d]", p.Path, status)
+			if p.Base == "" {
+				liveBase[p.Path] = true
+			}
 		}
 	}
-	// Flag old versions coexisting with new — often less protected
 	if len(result.RESTVersions) >= 2 {
 		report.Add(core.Finding{
 			Module:      "apiscan",
 			WSTG:        "WSTG-INFO-06",
-			Title:       fmt.Sprintf("Multiple API versions live: %d", len(result.RESTVersions)),
+			Title:       fmt.Sprintf("Multiple API namespaces live: %d", len(result.RESTVersions)),
 			Severity:    core.SevLow,
-			Description: "Older API versions often have weaker auth and known bugs: " + strings.Join(result.RESTVersions, ", "),
+			Description: "Multiple API namespaces can indicate older/less-protected versions: " + strings.Join(result.RESTVersions, ", "),
 		})
 	}
 

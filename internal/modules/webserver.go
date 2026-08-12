@@ -2,8 +2,10 @@ package modules
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"time"
@@ -98,28 +100,70 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 	log.Info("Probing HTTP methods...")
 	if !cfg.Passive {
 		methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "TRACE"}
-		// Probe against a non-existent path to avoid side effects on root
 		probeURL := target + "/W1r3hound-method-probe-nonexistent"
+
+		// Establish a baseline GET response body hash. SPA frameworks
+		// (Express, Next.js, Nuxt, Angular Universal, …) serve the same
+		// index.html catch-all for any method/path combination, so every
+		// method returns 200 with an identical body. Comparing each
+		// method's body against the GET baseline detects this and
+		// suppresses the resulting false positives.
+		var baselineHash [sha256.Size]byte
+		var baselineLen int64
+		if baseResp, baseErr := core.DoRequestRL(client, "GET", probeURL, cfg.UserAgent, cfg.RL); baseErr == nil {
+			baseBody, _ := io.ReadAll(io.LimitReader(baseResp.Body, 256*1024))
+			baseResp.Body.Close()
+			baselineHash = sha256.Sum256(baseBody)
+			baselineLen = int64(len(baseBody))
+		}
+
+		// Per-method body hashes + TRACE body for echo detection.
+		methodBodyHash := make(map[string][sha256.Size]byte)
+		var traceBody string
+		var traceCT string
+
 		for _, m := range methods {
 			r, err := core.DoRequestRL(client, m, probeURL, cfg.UserAgent, cfg.RL)
 			if err != nil {
 				continue
 			}
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 256*1024))
 			r.Body.Close()
 			result.ErrorBehavior[m] = r.StatusCode
-			// A method is "accepted" only if the server returns 2xx. A 3xx is a
-			// redirect the framework issues for ANY method — it doesn't mean the
-			// method is served — so counting it here inflated the allowed-method
-			// list (e.g. every method "accepted" on a host that redirects all
-			// paths to /login). 404/403/500 means the framework doesn't block it
-			// at the method level but doesn't actually serve it either — not a
-			// real finding.
+			h := sha256.Sum256(body)
+			methodBodyHash[m] = h
+
+			if m == "TRACE" {
+				traceBody = string(body)
+				traceCT = r.Header.Get("Content-Type")
+			}
+
 			if r.StatusCode >= 200 && r.StatusCode < 300 {
+				// Suppress SPA catch-all: if the body is identical to the
+				// baseline GET and the response is HTML, this method is
+				// not actually handled — the SPA fallback served it.
+				if baselineLen > 0 && h == baselineHash && isHTMLContentType(r.Header.Get("Content-Type")) {
+					log.Debug("Method %s returned SPA catch-all (body matches GET baseline) — suppressed", m)
+					continue
+				}
 				result.HTTPMethods = append(result.HTTPMethods, m)
 			}
 		}
-		// TRACE is dangerous even with 200 (XST)
+
+		// TRACE is a real XST vector only when the server echoes the
+		// request back per RFC 7231 §4.3.8: Content-Type message/http, or
+		// the body literally starts with the request line. A SPA catch-all
+		// that returns text/html with the same index.html for any method
+		// is not a TRACE implementation.
+		traceIsReal := false
 		if traceStatus, ok := result.ErrorBehavior["TRACE"]; ok && traceStatus == 200 {
+			if strings.HasPrefix(traceCT, "message/http") {
+				traceIsReal = true
+			} else if strings.HasPrefix(strings.TrimSpace(traceBody), "TRACE ") {
+				traceIsReal = true
+			}
+		}
+		if traceIsReal {
 			if !contains(result.HTTPMethods, "TRACE") {
 				result.HTTPMethods = append(result.HTTPMethods, "TRACE")
 			}
@@ -131,13 +175,24 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 				Severity:    core.SevMedium,
 				Description: "TRACE can be used for Cross-Site Tracing (XST) attacks.",
 			})
+		} else if _, ok := result.ErrorBehavior["TRACE"]; ok && result.ErrorBehavior["TRACE"] == 200 {
+			log.Debug("TRACE returns 200 but does not echo request (SPA catch-all) — not a real XST")
 		}
-		// PUT/DELETE are dangerous only if they return 2xx
+
+		// PUT/DELETE are dangerous only if they return 2xx AND the
+		// response differs from the baseline GET (ruling out SPA
+		// catch-alls that serve index.html for every method).
 		dangerousMethods := []string{}
 		for _, dm := range []string{"PUT", "DELETE"} {
-			if sc, ok := result.ErrorBehavior[dm]; ok && sc >= 200 && sc < 300 {
-				dangerousMethods = append(dangerousMethods, fmt.Sprintf("%s→%d", dm, sc))
+			sc, ok := result.ErrorBehavior[dm]
+			if !ok || sc < 200 || sc >= 300 {
+				continue
 			}
+			if h, hOK := methodBodyHash[dm]; hOK && baselineLen > 0 && h == baselineHash {
+				log.Debug("%s returns 200 but body matches GET baseline (SPA catch-all) — suppressed", dm)
+				continue
+			}
+			dangerousMethods = append(dangerousMethods, fmt.Sprintf("%s→%d", dm, sc))
 		}
 		if len(dangerousMethods) > 0 {
 			log.Warn("Dangerous HTTP methods return 2xx: %v", dangerousMethods)
@@ -307,6 +362,11 @@ func tlsVersionName(v uint16) string {
 	default:
 		return fmt.Sprintf("0x%04x", v)
 	}
+}
+
+func isHTMLContentType(ct string) bool {
+	ct = strings.ToLower(ct)
+	return strings.HasPrefix(ct, "text/html") || strings.Contains(ct, "xhtml")
 }
 
 func hostPort(target string) (string, bool) {

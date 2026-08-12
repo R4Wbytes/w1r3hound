@@ -39,6 +39,13 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 	target := normalizeTarget(cfg.Target)
 	result := MetafilesResult{}
 
+	// Calibrate SPA/catch-all up front so every section below can
+	// filter responses that are just the SPA shell served for any URL.
+	catchAll := calibrateCatchAll(client, target, cfg)
+	if catchAll.isCatchAll {
+		log.Warn("Catch-all/SPA detected (~%d bytes) — filtering false positives across all probes", catchAll.bodyLen)
+	}
+
 	// ── 1. robots.txt ──
 	log.Info("Fetching robots.txt...")
 	body, status, err := core.FetchBodyRL(client, target+"/robots.txt", cfg.UserAgent, cfg.RL)
@@ -79,9 +86,15 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 
 	for _, surl := range sitemapURLs {
 		body, status, err := core.FetchBodyRL(client, surl, cfg.UserAgent, cfg.RL)
-		if err == nil && status == 200 && strings.Contains(body, "<") {
+		if err != nil || status != 200 {
+			continue
+		}
+		if catchAll.matches(status, len(body)) {
+			log.Debug("Sitemap %s matches catch-all signature, skipping", surl)
+			continue
+		}
+		if strings.Contains(body, "<") {
 			result.Sitemaps = append(result.Sitemaps, surl)
-			// Extract URLs from sitemap
 			urls := extractSitemapURLs(body)
 			log.Info("Sitemap %s — %d URLs", surl, len(urls))
 		}
@@ -95,7 +108,7 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 	}
 	for _, sp := range secPaths {
 		body, status, err := core.FetchBodyRL(client, sp, cfg.UserAgent, cfg.RL)
-		if err == nil && status == 200 && len(body) > 10 {
+		if err == nil && status == 200 && len(body) > 10 && !catchAll.matches(status, len(body)) {
 			result.SecurityTxt = body
 			log.Info("security.txt found at %s", sp)
 			// Extract bug bounty / contact info
@@ -117,7 +130,7 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 
 	// ── 4. humans.txt ──
 	body, status, err = core.FetchBodyRL(client, target+"/humans.txt", cfg.UserAgent, cfg.RL)
-	if err == nil && status == 200 && len(body) > 5 {
+	if err == nil && status == 200 && len(body) > 5 && !catchAll.matches(status, len(body)) {
 		result.HumansTxt = body
 		log.Info("humans.txt found — may reveal team/tech info")
 	}
@@ -140,17 +153,22 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 		"/.well-known/mta-sts.txt",
 	}
 	for _, p := range wellKnownPaths {
-		_, status, err := core.FetchBodyRL(client, target+p, cfg.UserAgent, cfg.RL)
-		if err == nil && status == 200 {
-			result.WellKnown = append(result.WellKnown, p)
-			log.Info("Found: %s", p)
+		wkBody, wkStatus, wkErr := core.FetchBodyRL(client, target+p, cfg.UserAgent, cfg.RL)
+		if wkErr != nil || wkStatus != 200 {
+			continue
 		}
+		if catchAll.matches(wkStatus, len(wkBody)) {
+			log.Debug("Well-known %s matches catch-all signature, skipping", p)
+			continue
+		}
+		result.WellKnown = append(result.WellKnown, p)
+		log.Info("Found: %s", p)
 	}
 
 	// ── OIDC/OAuth metadata analysis ──
 	for _, oidcPath := range []string{"/.well-known/openid-configuration", "/.well-known/oauth-authorization-server"} {
 		oidcBody, oidcStatus, _ := core.FetchBodyRL(client, target+oidcPath, cfg.UserAgent, cfg.RL)
-		if oidcStatus == 200 && strings.Contains(oidcBody, "grant_types") {
+		if oidcStatus == 200 && !catchAll.matches(oidcStatus, len(oidcBody)) && strings.Contains(oidcBody, "grant_types") {
 			lowerBody := strings.ToLower(oidcBody)
 			var dangerousGrants []string
 			if strings.Contains(lowerBody, `"password"`) ||
@@ -178,14 +196,6 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 	}
 
 	// ── Fingerprint-aware path probing ──
-	// Calibrate catch-all / SPA behaviour first: if the server returns 200
-	// for arbitrary paths we must not trust bare 200s as proof that a
-	// technology-specific endpoint exists.
-	catchAll := calibrateCatchAll(client, target, cfg)
-	if catchAll.isCatchAll {
-		log.Warn("Catch-all/SPA detected (~%d bytes) — filtering sensitive-path false positives", catchAll.bodyLen)
-	}
-
 	techPaths := []struct {
 		Path   string
 		Desc   string

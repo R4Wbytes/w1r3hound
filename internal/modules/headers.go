@@ -105,28 +105,47 @@ func RunHeaders(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	defer resp.Body.Close()
 
 	// ── 1. Security Headers Check ──
+	isHTTPS := strings.HasPrefix(target, "https://")
 	secHeaders := []struct {
-		Name     string
-		Required bool
-		Desc     string
+		Name      string
+		Required  bool
+		HTTPSOnly bool
+		Desc      string
 	}{
-		{"Strict-Transport-Security", true, "HSTS prevents protocol downgrade attacks"},
-		{"Content-Security-Policy", true, "CSP mitigates XSS and injection attacks"},
-		{"X-Content-Type-Options", true, "Prevents MIME-type sniffing"},
-		{"X-Frame-Options", true, "Prevents clickjacking"},
-		{"X-XSS-Protection", false, "Legacy XSS filter (deprecated in modern browsers)"},
-		{"Referrer-Policy", true, "Controls referrer information leakage"},
-		{"Permissions-Policy", true, "Controls browser feature access"},
-		{"Cross-Origin-Embedder-Policy", false, "COEP for cross-origin isolation"},
-		{"Cross-Origin-Opener-Policy", false, "COOP prevents cross-origin attacks"},
-		{"Cross-Origin-Resource-Policy", false, "CORP controls resource sharing"},
-		{"Cache-Control", false, "Cache directives for sensitive data"},
+		{"Strict-Transport-Security", true, true, "HSTS prevents protocol downgrade attacks"},
+		{"Content-Security-Policy", true, false, "CSP mitigates XSS and injection attacks"},
+		{"X-Content-Type-Options", true, false, "Prevents MIME-type sniffing"},
+		{"X-Frame-Options", true, false, "Prevents clickjacking"},
+		{"X-XSS-Protection", false, false, "Legacy XSS filter (deprecated in modern browsers)"},
+		{"Referrer-Policy", true, false, "Controls referrer information leakage"},
+		{"Permissions-Policy", true, false, "Controls browser feature access"},
+		{"Cross-Origin-Embedder-Policy", false, false, "COEP for cross-origin isolation"},
+		{"Cross-Origin-Opener-Policy", false, false, "COOP prevents cross-origin attacks"},
+		{"Cross-Origin-Resource-Policy", false, false, "CORP controls resource sharing"},
+		{"Cache-Control", false, false, "Cache directives for sensitive data"},
 	}
 
 	var missing []string
 	for _, sh := range secHeaders {
 		val := resp.Header.Get(sh.Name)
 		entry := SecurityHeader{Present: val != "", Value: val}
+
+		// HSTS is only meaningful over HTTPS — RFC 6797 §7.2 says
+		// browsers MUST ignore it over plain HTTP. Reporting it as
+		// MISSING on an HTTP target inflates the count and can push
+		// severity from LOW to MEDIUM without cause.
+		if sh.HTTPSOnly && !isHTTPS {
+			if val == "" {
+				entry.Grade = "WARN"
+				log.Debug("  ~ %-35s not applicable (HTTP target)", sh.Name)
+			} else {
+				entry.Grade = "GOOD"
+				log.Info("  ✓ %-35s = %s", sh.Name, truncate(val, 80))
+			}
+			result.SecurityHeaders[sh.Name] = entry
+			continue
+		}
+
 		if val != "" {
 			entry.Grade = "GOOD"
 			log.Info("  ✓ %-35s = %s", sh.Name, truncate(val, 80))
@@ -139,6 +158,27 @@ func RunHeaders(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			log.Debug("  ~ %-35s not set (optional)", sh.Name)
 		}
 		result.SecurityHeaders[sh.Name] = entry
+	}
+
+	// Feature-Policy is the deprecated predecessor of Permissions-Policy.
+	// When Permissions-Policy is missing but Feature-Policy is present,
+	// flag the deprecated header use rather than leaving a silent gap.
+	if resp.Header.Get("Permissions-Policy") == "" {
+		if fp := resp.Header.Get("Feature-Policy"); fp != "" {
+			log.Warn("Feature-Policy header present (deprecated — use Permissions-Policy)")
+			report.Add(core.Finding{
+				Module:      "headers",
+				WSTG:        "WSTG-CONF-07",
+				Title:       "Deprecated Feature-Policy header in use",
+				Severity:    core.SevLow,
+				Description: fmt.Sprintf("Server sends Feature-Policy (%s) instead of the modern Permissions-Policy header. Feature-Policy is deprecated and not supported in all browsers.", truncate(fp, 120)),
+			})
+			result.Technologies = append(result.Technologies, TechDetection{
+				Source: "header",
+				Name:   "Feature-Policy (deprecated)",
+				Value:  fp,
+			})
+		}
 	}
 
 	if len(missing) > 0 {
