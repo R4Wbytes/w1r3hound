@@ -59,9 +59,9 @@ var serviceNames = map[int]string{
 	1521: "oracle", 1723: "pptp", 2049: "nfs",
 	2082: "cpanel", 2083: "cpanel-ssl", 2086: "whm", 2087: "whm-ssl",
 	2095: "webmail", 2096: "webmail-ssl",
-	3000: "dev-http/grafana", 3128: "squid-proxy", 3306: "mysql",
+	3000: "dev-http", 3128: "squid-proxy", 3306: "mysql",
 	3389: "rdp", 4443: "https-alt", 4848: "glassfish",
-	5000: "dev-http/docker", 5432: "postgresql",
+	5000: "dev-http", 5432: "postgresql",
 	5555: "adb", 5601: "kibana", 5672: "amqp", 5900: "vnc",
 	5984: "couchdb", 5985: "winrm", 5986: "winrm-ssl",
 	6000: "x11", 6379: "redis", 6443: "k8s-api",
@@ -197,6 +197,10 @@ func scanOneIP(cfg *core.Config, log *core.Logger, host, ip string, ports []int,
 			}
 			pi.Banner = probeBanner(conn, pi.Service, host, bannerWindow)
 			conn.Close()
+
+			if refined := refineServiceFromBanner(pi.Banner, pi.Service); refined != "" {
+				pi.Service = refined
+			}
 
 			mu.Lock()
 			result.OpenPorts = append(result.OpenPorts, pi)
@@ -403,4 +407,53 @@ func extractHost(target string) string {
 		host = host[:i]
 	}
 	return host
+}
+
+// httpBannerSignatures maps banner substrings to a more specific service name.
+// Checked in order; the first match wins.
+var httpBannerSignatures = []struct {
+	Marker  string
+	Service string
+}{
+	{"X-Grafana", "grafana"},
+	{"grafana", "grafana"},
+	{"X-Jenkins", "jenkins"},
+	{"X-Hudson", "jenkins"},
+	{"Kibana", "kibana"},
+	{"X-Powered-By: Express", "express"},
+	{"X-Powered-By: Next.js", "nextjs"},
+	{"X-Powered-By: Nuxt", "nuxtjs"},
+	{"X-Powered-By: PHP", "php"},
+	{"X-Powered-By: ASP.NET", "aspnet"},
+	{"Server: Apache", "apache"},
+	{"Server: nginx", "nginx"},
+	{"Server: Microsoft-IIS", "iis"},
+	{"Server: Caddy", "caddy"},
+	{"Server: gunicorn", "gunicorn"},
+	{"Server: uvicorn", "uvicorn"},
+	{"Server: Kestrel", "kestrel"},
+	{"__NEXT_DATA__", "nextjs"},
+	{"<app-root", "angular"},
+	{"wp-content", "wordpress"},
+	{"Drupal", "drupal"},
+	{"Docker-Distribution-Api-Version", "docker-registry"},
+	{"Server: Werkzeug", "flask"},
+	{"Server: CherryPy", "cherrypy"},
+}
+
+// refineServiceFromBanner inspects the HTTP banner to provide a more specific
+// service identification than the static port→name table can. Generic labels
+// like "dev-http" or "http-alt" are upgraded when the banner reveals the actual
+// framework or server. Returns "" to keep the current name.
+func refineServiceFromBanner(banner, currentService string) string {
+	if banner == "" || !strings.Contains(banner, "HTTP/") {
+		return ""
+	}
+	lower := strings.ToLower(banner)
+	for _, sig := range httpBannerSignatures {
+		if strings.Contains(lower, strings.ToLower(sig.Marker)) {
+			return sig.Service
+		}
+	}
+	return ""
 }
