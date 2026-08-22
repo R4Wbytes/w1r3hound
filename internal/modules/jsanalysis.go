@@ -211,6 +211,25 @@ func RunJSAnalysis(cfg *core.Config, report *core.ReconReport, log *core.Logger)
 		log.Info("SPA frameworks detected: %v", result.Frameworks)
 	}
 
+	// Extract query parameters from discovered endpoints (e.g.
+	// "/rest/user/change-password?current=" → "current"). SPA targets
+	// embed all their routing in JS, so the crawler (which only parses
+	// HTML forms) finds 0 params — these are the only source.
+	var jsParams []string
+	for _, ep := range result.Endpoints {
+		if i := strings.IndexByte(ep, '?'); i >= 0 {
+			qs := ep[i+1:]
+			for _, pair := range strings.Split(qs, "&") {
+				key := strings.SplitN(pair, "=", 2)[0]
+				key = strings.TrimSpace(key)
+				if key != "" {
+					jsParams = append(jsParams, key)
+				}
+			}
+		}
+	}
+	cfg.AddSharedParams(jsParams)
+
 	// Feed discovered endpoints into shared context for dirbrute/crawler
 	cfg.SharedMu.Lock()
 	cfg.SharedEndpoints = append(cfg.SharedEndpoints, result.APIRoutes...)

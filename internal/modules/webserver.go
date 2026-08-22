@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"strings"
 	"time"
 
@@ -90,6 +91,22 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 					Severity: core.SevLow,
 				})
 			}
+		}
+
+		// Detect custom non-standard X- headers that may leak internal
+		// information (hiring pages, debug flags, internal routing, build
+		// metadata).  Standard headers and well-known security headers are
+		// already covered above; this catches the long tail of app-specific
+		// headers that frameworks like Express allow developers to set.
+		for _, hh := range nonStandardInfoHeaders(resp.Header) {
+			log.Info("Non-standard header: %s = %s", hh[0], hh[1])
+			report.Add(core.Finding{
+				Module:      "webserver",
+				WSTG:        "WSTG-INFO-02",
+				Title:       fmt.Sprintf("Non-standard header leaks info: %s = %s", hh[0], hh[1]),
+				Severity:    core.SevInfo,
+				Description: fmt.Sprintf("Custom response header %s may reveal internal information.", hh[0]),
+			})
 		}
 		resp.Body.Close()
 	} else {
@@ -390,4 +407,110 @@ func hostPort(target string) (string, bool) {
 		port = "443"
 	}
 	return net.JoinHostPort(host, port), isTLS
+}
+
+// standardHeaders is the set of well-known HTTP headers that every web server
+// uses.  Any header NOT in this set AND starting with "X-" is potentially a
+// custom application header that reveals internal information.
+var standardHeaders = map[string]bool{
+	"Accept-Ranges":                  true,
+	"Access-Control-Allow-Credentials": true,
+	"Access-Control-Allow-Headers":  true,
+	"Access-Control-Allow-Methods":  true,
+	"Access-Control-Allow-Origin":   true,
+	"Access-Control-Expose-Headers": true,
+	"Access-Control-Max-Age":        true,
+	"Age":                           true,
+	"Allow":                         true,
+	"Cache-Control":                 true,
+	"Connection":                    true,
+	"Content-Disposition":           true,
+	"Content-Encoding":              true,
+	"Content-Language":              true,
+	"Content-Length":                 true,
+	"Content-Range":                 true,
+	"Content-Security-Policy":       true,
+	"Content-Security-Policy-Report-Only": true,
+	"Content-Type":                  true,
+	"Cross-Origin-Embedder-Policy":  true,
+	"Cross-Origin-Opener-Policy":    true,
+	"Cross-Origin-Resource-Policy":  true,
+	"Date":                          true,
+	"Etag":                          true,
+	"Expires":                       true,
+	"Feature-Policy":                true,
+	"Keep-Alive":                    true,
+	"Last-Modified":                 true,
+	"Link":                          true,
+	"Location":                      true,
+	"Nel":                           true,
+	"P3p":                           true,
+	"Permissions-Policy":            true,
+	"Pragma":                        true,
+	"Referrer-Policy":               true,
+	"Report-To":                     true,
+	"Retry-After":                   true,
+	"Server":                        true,
+	"Set-Cookie":                    true,
+	"Strict-Transport-Security":     true,
+	"Timing-Allow-Origin":           true,
+	"Tk":                            true,
+	"Trailer":                       true,
+	"Transfer-Encoding":             true,
+	"Vary":                          true,
+	"Via":                           true,
+	"Www-Authenticate":              true,
+	"X-Content-Type-Options":        true,
+	"X-Download-Options":            true,
+	"X-Frame-Options":               true,
+	"X-Permitted-Cross-Domain-Policies": true,
+	"X-Xss-Protection":              true,
+	// Well-known infrastructure headers already covered above
+	"X-Powered-By":                  true,
+	"X-Generator":                   true,
+	"X-Aspnet-Version":              true,
+	"X-Aspnetmvc-Version":           true,
+	"X-Runtime":                     true,
+	"X-Backend":                     true,
+	// CDN / proxy / cache headers (infra, not app-specific)
+	"X-Cache":                       true,
+	"X-Cache-Status":                true,
+	"X-Cache-Hits":                  true,
+	"X-Served-By":                   true,
+	"X-Backend-Server":              true,
+	"X-Cdn":                         true,
+	"X-Request-Id":                  true,
+	"X-Correlation-Id":              true,
+	"X-Amzn-Requestid":              true,
+	"X-Amzn-Trace-Id":               true,
+	"X-Azure-Ref":                   true,
+	"X-Envoy-Upstream-Service-Time": true,
+	"X-Varnish":                     true,
+	"X-Pingback":                    true,
+	"X-Litespeed-Cache":             true,
+	"X-Turbo-Charged-By":            true,
+	"X-Mod-Pagespeed":               true,
+	"X-Page-Speed":                  true,
+	"X-Drupal-Cache":                true,
+	"X-Drupal-Dynamic-Cache":        true,
+	"X-Envoy-Decorator-Operation":   true,
+	"X-Kubernetes-Pf-Flowschema-Uid": true,
+}
+
+// nonStandardInfoHeaders returns custom response headers that are not in the
+// standard/well-known set and start with "X-".  These often leak internal
+// application details (hiring pages, debug flags, build metadata).
+func nonStandardInfoHeaders(h http.Header) [][2]string {
+	var found [][2]string
+	for name, vals := range h {
+		canonical := http.CanonicalHeaderKey(name)
+		if !strings.HasPrefix(canonical, "X-") {
+			continue
+		}
+		if standardHeaders[canonical] {
+			continue
+		}
+		found = append(found, [2]string{canonical, strings.Join(vals, "; ")})
+	}
+	return found
 }

@@ -197,12 +197,18 @@ func RunAPI(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 		if isDoc {
 			sf := SwaggerFinding{URL: url, Type: doc.Type}
-			// Count endpoints in JSON specs
-			if doc.Type == "swagger" || doc.Type == "openapi" {
-				sf.Endpoints = strings.Count(body, "\"get\":") + strings.Count(body, "\"post\":") +
-					strings.Count(body, "\"put\":") + strings.Count(body, "\"delete\":") +
-					strings.Count(body, "\"patch\":")
+			specBody := body
+			// When the response is a Swagger UI HTML page (not a raw JSON
+			// spec), the actual OpenAPI spec is embedded in a companion JS
+			// file (swagger-ui-init.js) or loaded from a URL declared in the
+			// page.  Counting operations in the HTML always yields 0 — fetch
+			// the real spec so the endpoint count is accurate.
+			if isSwaggerUIHTML(body) {
+				if initSpec := fetchSwaggerUISpec(client, url, body, cfg); initSpec != "" {
+					specBody = initSpec
+				}
 			}
+			sf.Endpoints = countAPIOperations(specBody)
 			result.SwaggerDocs = append(result.SwaggerDocs, sf)
 			log.Warn("API docs exposed [%s]: %s (%d operations)", doc.Type, url, sf.Endpoints)
 			report.Add(core.Finding{
@@ -486,4 +492,87 @@ func calibrateCatchAll(client *http.Client, target string, cfg *core.Config) cat
 		}
 	}
 	return catchAllSignature{}
+}
+
+// countAPIOperations counts HTTP method operations in a JSON or JS-embedded
+// OpenAPI/Swagger spec body.
+func countAPIOperations(body string) int {
+	return strings.Count(body, "\"get\":") + strings.Count(body, "\"post\":") +
+		strings.Count(body, "\"put\":") + strings.Count(body, "\"delete\":") +
+		strings.Count(body, "\"patch\":")
+}
+
+// isSwaggerUIHTML reports whether a response body is a Swagger UI HTML page
+// (as opposed to a raw JSON/YAML spec).  Swagger UI pages contain
+// characteristic markup that raw specs never do.
+func isSwaggerUIHTML(body string) bool {
+	lower := strings.ToLower(body)
+	return (strings.Contains(lower, "<html") || strings.Contains(lower, "<!doctype")) &&
+		(strings.Contains(lower, "swagger-ui") || strings.Contains(lower, "swagger ui"))
+}
+
+// swaggerInitJSRe matches the script src that loads the embedded spec in
+// common Swagger UI deployments (swagger-ui-init.js, swagger-initializer.js).
+var swaggerInitJSRe = regexp.MustCompile(`(?i)(?:src|href)\s*=\s*["']([^"']*swagger-ui-init[^"']*\.js[^"']*)["']`)
+
+// swaggerSpecURLRe extracts a spec URL from Swagger UI's SwaggerUIBundle config
+// (e.g. `url: "/v2/api-docs"` or `url: "https://petstore.io/swagger.json"`).
+var swaggerSpecURLRe = regexp.MustCompile(`(?i)url\s*:\s*["']([^"']+)["']`)
+
+// fetchSwaggerUISpec attempts to retrieve the actual OpenAPI/Swagger spec from
+// a Swagger UI HTML page. It tries two strategies:
+//  1. Fetch the companion swagger-ui-init.js (contains the spec inline).
+//  2. Extract the spec URL from the HTML/JS and fetch it.
+func fetchSwaggerUISpec(client *http.Client, pageURL, pageBody string, cfg *core.Config) string {
+	// Ensure the base URL ends with "/" so relative script paths like
+	// "./swagger-ui-init.js" resolve against the directory, not the parent.
+	// Without this, resolveURL("http://host/api-docs", "./swagger-ui-init.js")
+	// produces "http://host/swagger-ui-init.js" (the SPA catch-all) instead
+	// of "http://host/api-docs/swagger-ui-init.js".
+	dirURL := pageURL
+	if !strings.HasSuffix(dirURL, "/") {
+		dirURL += "/"
+	}
+
+	// Strategy 1: look for swagger-ui-init.js script tag
+	if m := swaggerInitJSRe.FindStringSubmatch(pageBody); len(m) > 1 {
+		initURL := resolveURL(dirURL, m[1])
+		initBody, status, err := core.FetchBodyRL(client, initURL, cfg.UserAgent, cfg.RL)
+		if err == nil && status == 200 && len(initBody) > 100 && looksLikeSwaggerSpec(initBody) {
+			return initBody
+		}
+	}
+
+	// Strategy 2: try common init JS filenames relative to the page
+	for _, initPath := range []string{
+		"swagger-ui-init.js",
+		"swagger-initializer.js",
+	} {
+		initURL := resolveURL(dirURL, initPath)
+		initBody, status, err := core.FetchBodyRL(client, initURL, cfg.UserAgent, cfg.RL)
+		if err == nil && status == 200 && len(initBody) > 100 && looksLikeSwaggerSpec(initBody) {
+			return initBody
+		}
+	}
+
+	// Strategy 3: extract spec URL from the page body (SwaggerUIBundle config)
+	if m := swaggerSpecURLRe.FindStringSubmatch(pageBody); len(m) > 1 {
+		specURL := resolveURL(dirURL, m[1])
+		specBody, status, err := core.FetchBodyRL(client, specURL, cfg.UserAgent, cfg.RL)
+		if err == nil && status == 200 && strings.Contains(specBody, "\"paths\"") {
+			return specBody
+		}
+	}
+
+	return ""
+}
+
+// looksLikeSwaggerSpec reports whether a body contains the hallmarks of an
+// OpenAPI/Swagger spec (inline or wrapped in JS) rather than an SPA catch-all.
+func looksLikeSwaggerSpec(body string) bool {
+	return strings.Contains(body, "\"paths\"") ||
+		strings.Contains(body, "swaggerDoc") ||
+		strings.Contains(body, "SwaggerUIBundle") ||
+		strings.Contains(body, "\"openapi\"") ||
+		strings.Contains(body, "\"swagger\"")
 }
