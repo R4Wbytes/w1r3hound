@@ -88,6 +88,10 @@ func RunSaaS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		log.Info("Target is an IP literal — SaaS org enumeration not applicable, skipping")
 		return
 	}
+	if isNonRoutableDomain(cfg.Domain) {
+		log.Info("Target is a non-routable hostname — SaaS org enumeration not applicable, skipping")
+		return
+	}
 	apex := extractApexDomain(cfg.Domain)
 	orgName := strings.Split(apex, ".")[0]
 	log.Info("Checking SaaS platforms for org '%s'...", orgName)

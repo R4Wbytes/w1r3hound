@@ -270,6 +270,8 @@ func RunDNS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			result.DMARCPolicy = "(inherited from apex) " + apexDMARC
 		} else if isSubdomain(domain, cfg.RootDomains) {
 			log.Debug("No DMARC and target is a subdomain with no apex DMARC — skipping (subdomain inherits NXDOMAIN behaviour from apex)")
+		} else if isNonRoutableDomain(cfg.Domain) {
+			log.Debug("Non-routable hostname — DMARC check not applicable")
 		} else {
 			log.Warn("No DMARC record — domain may be spoofable")
 			report.Add(core.Finding{

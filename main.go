@@ -12,8 +12,10 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -241,6 +243,8 @@ func main() {
 		}
 		cfg.Modules = append(cfg.Modules, mapped)
 	}
+
+	cfg.Target = detectScheme(cfg.Target, cfg.Timeout, cfg.SkipSSLCheck)
 
 	cfg.Domain = extractDomain(cfg.Target)
 	// Fix #3 (2026-08-07): seed RootDomains with the extracted
@@ -519,6 +523,32 @@ func mapProtocol(name string) string {
 	default:
 		return name // pass through internal names too
 	}
+}
+
+func detectScheme(target string, timeout time.Duration, skipTLS bool) string {
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+		return target
+	}
+	client := &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: skipTLS},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	if resp, err := client.Head("https://" + target); err == nil {
+		resp.Body.Close()
+		return "https://" + target
+	}
+	if resp, err := client.Head("http://" + target); err == nil {
+		resp.Body.Close()
+		fmt.Fprintf(os.Stderr, "\033[33m  ⚠ No scheme given — HTTPS failed, using HTTP\033[0m\n")
+		return "http://" + target
+	}
+	fmt.Fprintf(os.Stderr, "\033[33m  ⚠ No scheme given and neither HTTPS nor HTTP responded — defaulting to https://\033[0m\n")
+	return "https://" + target
 }
 
 func extractDomain(target string) string {

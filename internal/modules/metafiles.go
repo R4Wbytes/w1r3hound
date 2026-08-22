@@ -561,6 +561,9 @@ func buildDirectoryListingFinding(module, path, sourceNote string, entries []str
 		desc = fmt.Sprintf("Directory listing at %s%s exposes %d entries, including %d sensitive file(s): %s.",
 			path, sourceNote, len(entries), len(sensitive), strings.Join(sensitive, ", "))
 	}
+	if strings.HasPrefix(path, "/.well-known") && len(sensitive) == 0 {
+		sev = core.SevInfo
+	}
 	return core.Finding{
 		Module:      module,
 		WSTG:        "WSTG-CONF-04",

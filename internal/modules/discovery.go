@@ -429,6 +429,10 @@ func RunCloudStorage(cfg *core.Config, report *core.ReconReport, log *core.Logge
 		log.Info("Target is an IP literal — cloud bucket names cannot be derived, skipping")
 		return
 	}
+	if isNonRoutableDomain(cfg.Domain) {
+		log.Info("Target is a non-routable hostname — cloud bucket names not meaningful, skipping")
+		return
+	}
 
 	client := core.NewHTTPClient(cfg)
 	domain := cfg.Domain

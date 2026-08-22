@@ -24,6 +24,19 @@ func contains(slice []string, item string) bool {
 	return false
 }
 
+func isNonRoutableDomain(domain string) bool {
+	d := strings.ToLower(domain)
+	if !strings.Contains(d, ".") {
+		return true
+	}
+	for _, suffix := range []string{".local", ".localhost", ".test", ".invalid", ".example", ".internal", ".lan", ".home", ".arpa"} {
+		if strings.HasSuffix(d, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 func isCloudflareChallenge(body string) bool {
 	if len(body) > 10000 {
 		return false
