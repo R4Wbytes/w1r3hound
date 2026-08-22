@@ -162,6 +162,7 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 		"/.well-known/dnt-policy.txt",
 		"/.well-known/gpc.json",
 		"/.well-known/mta-sts.txt",
+		"/.well-known/csaf/provider-metadata.json",
 	}
 	for _, p := range wellKnownPaths {
 		wkBody, wkStatus, wkErr := core.FetchBodyRL(client, target+p, cfg.UserAgent, cfg.RL)
@@ -398,6 +399,31 @@ var sensitiveListingExts = []string{
 	".sql", ".db", ".sqlite", ".kdbx",
 	".zip", ".tar", ".tgz", ".gz", ".rar", ".7z",
 	".key", ".pem", ".p12", ".pfx", ".env", ".pyc", ".git",
+	".tf", ".tfvars", ".tfstate",
+}
+
+// sensitiveListingNames are exact filenames (case-insensitive) whose presence
+// in a directory listing is always a disclosure — infrastructure-as-code files
+// that expose internal architecture, build processes, and often credentials.
+var sensitiveListingNames = map[string]bool{
+	"dockerfile":         true,
+	"docker-compose.yml": true,
+	"docker-compose.yaml": true,
+	".dockerenv":         true,
+	"makefile":           true,
+	"vagrantfile":        true,
+	"jenkinsfile":        true,
+	".gitlab-ci.yml":     true,
+	".travis.yml":        true,
+	".env.example":       true,
+	"wp-config.php":      true,
+	"web.config":         true,
+	"config.php":         true,
+	"database.yml":       true,
+	".htpasswd":          true,
+	".htaccess":          true,
+	".npmrc":             true,
+	".pypirc":            true,
 }
 
 // logFileRe matches log files including rotated ones, where ".log" is not the
@@ -455,6 +481,9 @@ func sensitiveListingFiles(entries []string) []string {
 	for _, e := range entries {
 		lower := strings.ToLower(e)
 		hit := logFileRe.MatchString(lower)
+		if !hit {
+			hit = sensitiveListingNames[lower]
+		}
 		if !hit {
 			for _, ext := range sensitiveListingExts {
 				if strings.HasSuffix(lower, ext) {
