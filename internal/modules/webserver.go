@@ -196,6 +196,28 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 			log.Debug("TRACE returns 200 but does not echo request (SPA catch-all) — not a real XST")
 		}
 
+		// When the SPA catch-all suppressed every probed method, the
+		// list contains only OPTIONS (its response body differs).
+		// Direct body comparison is unreliable on catch-all servers,
+		// so fall back to the Allow or Access-Control-Allow-Methods
+		// header from the OPTIONS response to populate the list.
+		if len(result.HTTPMethods) <= 1 {
+			if optResp, optErr := core.DoRequestRL(client, "OPTIONS", target, cfg.UserAgent, cfg.RL); optErr == nil {
+				allowHdr := optResp.Header.Get("Allow")
+				if allowHdr == "" {
+					allowHdr = optResp.Header.Get("Access-Control-Allow-Methods")
+				}
+				optResp.Body.Close()
+				if allowHdr != "" {
+					declared := parseMethodList(allowHdr)
+					if len(declared) > len(result.HTTPMethods) {
+						result.HTTPMethods = declared
+						log.Debug("SPA catch-all detected — methods populated from server-declared header: %v", declared)
+					}
+				}
+			}
+		}
+
 		// PUT/DELETE are dangerous only if they return 2xx AND the
 		// response differs from the baseline GET (ruling out SPA
 		// catch-alls that serve index.html for every method).
@@ -407,6 +429,21 @@ func hostPort(target string) (string, bool) {
 		port = "443"
 	}
 	return net.JoinHostPort(host, port), isTLS
+}
+
+// parseMethodList splits a comma-separated HTTP method list (from Allow or
+// Access-Control-Allow-Methods headers) into deduplicated uppercase tokens.
+func parseMethodList(hdr string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, part := range strings.Split(hdr, ",") {
+		m := strings.TrimSpace(strings.ToUpper(part))
+		if m != "" && !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // standardHeaders is the set of well-known HTTP headers that every web server

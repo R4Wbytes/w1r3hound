@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/w1r3hound/w1r3hound/internal/core"
 )
@@ -133,6 +134,7 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 					Data:     body,
 				})
 			}
+			analyzeSecurityTxt(body, target, cfg, report, log)
 			break
 		}
 	}
@@ -329,6 +331,57 @@ func extractSitemapURLs(body string) []string {
 		}
 	}
 	return urls
+}
+
+// ── security.txt field analysis (RFC 9116) ──
+
+// secTxtFieldRe matches RFC 9116 field lines: "FieldName: value".
+var secTxtFieldRe = regexp.MustCompile(`(?m)^([A-Za-z-]+):\s*(.+)$`)
+
+func analyzeSecurityTxt(body, target string, cfg *core.Config, report *core.ReconReport, log *core.Logger) {
+	fields := make(map[string][]string)
+	for _, m := range secTxtFieldRe.FindAllStringSubmatch(body, -1) {
+		key := strings.ToLower(strings.TrimSpace(m[1]))
+		val := strings.TrimSpace(m[2])
+		fields[key] = append(fields[key], val)
+	}
+
+	// RFC 9116 §2.5.5: Expires is REQUIRED. Check whether the date
+	// has passed — an expired security.txt means the contact/policy
+	// information may be stale and should not be relied upon.
+	if expires, ok := fields["expires"]; ok && len(expires) > 0 {
+		if t, err := time.Parse(time.RFC1123, expires[0]); err == nil {
+			if time.Now().After(t) {
+				log.Warn("security.txt Expires date has passed: %s", expires[0])
+				report.Add(core.Finding{
+					Module:      "metafiles",
+					WSTG:        "WSTG-INFO-03",
+					Title:       "security.txt has expired",
+					Severity:    core.SevLow,
+					Description: fmt.Sprintf("The Expires field is set to %s, which is in the past. Per RFC 9116 the file content should no longer be trusted.", expires[0]),
+				})
+			} else {
+				log.Info("security.txt Expires: %s (valid)", expires[0])
+			}
+		}
+	}
+
+	// Feed Contact URLs and Hiring/Acknowledgements paths into shared
+	// context so downstream modules can discover them. These are the
+	// site operator's own pointers to interesting pages.
+	var extraURLs []string
+	for _, key := range []string{"contact", "acknowledgements", "hiring"} {
+		for _, val := range fields[key] {
+			if strings.HasPrefix(val, "http://") || strings.HasPrefix(val, "https://") {
+				extraURLs = append(extraURLs, val)
+			} else if strings.HasPrefix(val, "/") || strings.HasPrefix(val, "#") {
+				extraURLs = append(extraURLs, resolveURL(target, val))
+			}
+		}
+	}
+	if len(extraURLs) > 0 {
+		cfg.AddSharedURLs(extraURLs)
+	}
 }
 
 // ── robots.txt Disallow verification (WSTG-CONF-04) ──
