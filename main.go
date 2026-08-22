@@ -53,6 +53,7 @@ var knownModules = map[string]bool{
 	"saasenum":   true,
 	"crawler":    true,
 	"jsdeep":     true,
+	"endprobe":   true,
 	"takeover":   true,
 }
 
@@ -318,7 +319,7 @@ func main() {
 		"webserver": true, "metafiles": true, "headers": true, "content": true,
 		"portscan": true, "cors": true, "cloud": true, "dirbrute": true, "crawler": true,
 		"httprobe": true, "apiscan": true, "saasenum": true, "jsdeep": true,
-		"takeover": true, "permute": true,
+		"endprobe": true, "takeover": true, "permute": true,
 	}
 
 	shouldRun := func(name string) bool {
@@ -418,6 +419,9 @@ func main() {
 	// ── Phase 5: JS analysis & takeover (after content+subdomains) ──
 	if shouldRun("jsdeep") {
 		safeRun(log, "jsdeep", func() { modules.RunJSAnalysis(cfg, r, log) })
+	}
+	if shouldRun("endprobe") {
+		safeRun(log, "endprobe", func() { modules.RunEndpointProbe(cfg, r, log) })
 	}
 	if shouldRun("takeover") {
 		safeRun(log, "takeover", func() { modules.RunTakeover(cfg, r, log) })

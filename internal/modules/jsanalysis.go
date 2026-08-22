@@ -230,9 +230,9 @@ func RunJSAnalysis(cfg *core.Config, report *core.ReconReport, log *core.Logger)
 	}
 	cfg.AddSharedParams(jsParams)
 
-	// Feed discovered endpoints into shared context for dirbrute/crawler
+	// Feed discovered endpoints into shared context for dirbrute/crawler/endprobe
 	cfg.SharedMu.Lock()
-	cfg.SharedEndpoints = append(cfg.SharedEndpoints, result.APIRoutes...)
+	cfg.SharedEndpoints = append(cfg.SharedEndpoints, result.Endpoints...)
 	cfg.SharedMu.Unlock()
 
 	if len(result.CloudURLs) > 0 {
