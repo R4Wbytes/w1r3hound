@@ -36,6 +36,11 @@ var subdomainRe = regexp.MustCompile(`[a-zA-Z0-9]([a-zA-Z0-9\-\_\.]{0,120}[a-zA-
 func RunPassive(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	log.Module("PASSIVESRC // CT Logs & Passive DNS Aggregation")
 
+	if isNonRoutableDomain(cfg.Domain) {
+		log.Info("Target is a non-routable hostname — passive sources not applicable, skipping")
+		return
+	}
+
 	domain := cfg.Domain
 	client := core.NewHTTPClient(cfg)
 

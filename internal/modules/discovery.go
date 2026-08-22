@@ -30,6 +30,11 @@ type WaybackResult struct {
 func RunWayback(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	log.Module("ARCHAEOLOGY // Wayback Machine Archive Mining")
 
+	if isNonRoutableDomain(cfg.Domain) {
+		log.Info("Target is a non-routable hostname — Wayback Machine not applicable, skipping")
+		return
+	}
+
 	client := core.NewHTTPClient(cfg)
 	domain := cfg.Domain
 
