@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/w1r3hound/w1r3hound/internal/core"
 )
@@ -28,6 +29,18 @@ process_cpu_user_seconds_total 0.42
 # HELP http_requests_count Total HTTP request count grouped by status code.
 # TYPE http_requests_count counter
 http_requests_count{status_code="200"} 12
+# HELP juiceshop_users_registered_total Total number of registered users.
+# TYPE juiceshop_users_registered_total gauge
+juiceshop_users_registered_total 23
+# HELP juiceshop_wallet_balance_total Total balance of all user wallets.
+# TYPE juiceshop_wallet_balance_total gauge
+juiceshop_wallet_balance_total 13887
+# HELP juiceshop_orders_placed_total Number of orders placed.
+# TYPE juiceshop_orders_placed_total counter
+juiceshop_orders_placed_total 3
+# HELP juiceshop_challenges_solved Number of solved challenges.
+# TYPE juiceshop_challenges_solved gauge
+juiceshop_challenges_solved{difficulty="1"} 2
 `
 
 func TestIsPrometheusMetrics(t *testing.T) {
@@ -49,12 +62,14 @@ func TestIsPrometheusMetrics(t *testing.T) {
 
 func TestPrometheusExposure(t *testing.T) {
 	count, leaks := prometheusExposure(samplePrometheusBody)
-	if count != 4 {
-		t.Errorf("expected 4 metrics (TYPE lines), got %d", count)
+	if count != 8 {
+		t.Errorf("expected 8 metrics (TYPE lines), got %d", count)
 	}
 	for _, want := range []string{
 		"Node.js runtime version", "application version",
 		"process CPU usage", "HTTP request statistics",
+		"registered-user counts", "aggregate wallet balances",
+		"order volumes", "application challenge inventory/progress",
 	} {
 		if !contains(leaks, want) {
 			t.Errorf("expected leak %q in %v", want, leaks)
@@ -101,6 +116,66 @@ func TestDirBrute_PrometheusMetricsClassified(t *testing.T) {
 	}
 	if !strings.Contains(prom.Description, "Node.js runtime version") {
 		t.Errorf("description should enumerate the leaked data, got %q", prom.Description)
+	}
+}
+
+func TestDirBrute_UnreachableReportsIncomplete(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	target := srv.URL
+	srv.Close()
+
+	cfg := core.DefaultConfig()
+	cfg.Target = target
+	cfg.Timeout = 200 * time.Millisecond
+	report := core.NewReport(target)
+
+	RunDirBrute(cfg, report, core.NewLogger(false))
+
+	if len(report.Findings) != 1 {
+		t.Fatalf("expected one explicit incomplete-result finding, got %d", len(report.Findings))
+	}
+	f := report.Findings[0]
+	if f.Title != "Directory discovery incomplete: target unreachable" {
+		t.Fatalf("unexpected finding title %q", f.Title)
+	}
+	result, ok := f.Data.(DirBruteResult)
+	if !ok {
+		t.Fatalf("finding data type = %T, want DirBruteResult", f.Data)
+	}
+	if result.Complete || result.Error == "" {
+		t.Errorf("unreachable scan must be marked incomplete with an error: %+v", result)
+	}
+}
+
+func TestWaybackPaginationHonorsGlobalLimitAndDropsHeaders(t *testing.T) {
+	page1, resume, more := parseWaybackPage([][]string{
+		{"original"},
+		{"https://example.com/one"},
+		{"https://example.com/two"},
+		{"resume-key-1"},
+	})
+	if !more || resume != "resume-key-1" {
+		t.Fatalf("resume parsing = (%q, %v)", resume, more)
+	}
+	rows := appendWaybackRows(nil, page1, 3)
+
+	page2, _, _ := parseWaybackPage([][]string{
+		{"original"},
+		{"https://example.com/three"},
+		{"https://example.com/four"},
+	})
+	rows = appendWaybackRows(rows, page2, 3)
+
+	if len(rows) != 3 {
+		t.Fatalf("global Wayback limit not enforced: %v", rows)
+	}
+	for _, row := range rows {
+		if len(row) == 0 || row[0] == "original" {
+			t.Fatalf("CDX header leaked into URL rows: %v", rows)
+		}
+	}
+	if rows[2][0] != "https://example.com/three" {
+		t.Fatalf("unexpected capped rows: %v", rows)
 	}
 }
 

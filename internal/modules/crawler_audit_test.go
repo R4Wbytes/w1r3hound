@@ -22,8 +22,8 @@ import (
 //     single-page app answers 200 with the index.html shell.
 //
 // This test stands up a faux SPA with exactly those traits and asserts the
-// crawler reports only genuine resources, while still following real HTML links
-// and capturing their forms/params (no over-suppression).
+// crawler reports only genuine HTML pages, while still following real links and
+// capturing their forms/params (no over-suppression).
 func TestCrawler_SPACatchAllAndTemplateLiterals(t *testing.T) {
 	// The app shell every unknown path returns (~350 bytes). Kept deliberately
 	// distinct in length from the real pages below so catch-all calibration can
@@ -33,7 +33,7 @@ func TestCrawler_SPACatchAllAndTemplateLiterals(t *testing.T) {
 
 	// Homepage links to a real HTML page and pulls in a JS bundle.
 	home := "<!DOCTYPE html><html><head><title>Faux Shop</title></head><body>" +
-		`<a href="/real">real</a><script src="/scripts.js"></script>` +
+		`<a href="/real?from=home">real</a><script src="/scripts.js"></script>` +
 		strings.Repeat("<!-- home -->", 16) + "</body></html>"
 
 	// A genuine second HTML page with a real form (must be crawled + parsed).
@@ -117,14 +117,17 @@ func TestCrawler_SPACatchAllAndTemplateLiterals(t *testing.T) {
 	if !pagePaths["/real"] {
 		t.Errorf("real HTML page /real was not crawled; pages=%v", pagePaths)
 	}
-	// The JS bundle is fetched but must NOT contribute HTML-derived artifacts.
-	if !pagePaths["/scripts.js"] {
-		t.Errorf("scripts.js was not fetched; pages=%v", pagePaths)
+	// Static bundles must not consume the page budget; jsdeep owns JS fetching.
+	if pagePaths["/scripts.js"] {
+		t.Errorf("scripts.js was counted as a page; pages=%v", pagePaths)
 	}
 
 	// Params: the real form's input must be captured; the JS ghost must not.
 	if !contains(res.Parameters, "real_param") {
 		t.Errorf("real form parameter missing; params=%v", res.Parameters)
+	}
+	if !contains(res.Parameters, "from") {
+		t.Errorf("query parameter from HTML link missing; params=%v", res.Parameters)
 	}
 	if contains(res.Parameters, "js_ghost_param") {
 		t.Errorf("ghost parameter mined from JS bundle; params=%v", res.Parameters)
@@ -158,6 +161,21 @@ func TestIsTemplateURL(t *testing.T) {
 	for _, u := range keep {
 		if isTemplateURL(u) {
 			t.Errorf("expected %q to be treated as a real link", u)
+		}
+	}
+}
+
+func TestIsCrawlablePageURL(t *testing.T) {
+	for _, raw := range []string{"https://example.com/", "https://example.com/getting-started", "https://example.com/index.html"} {
+		u, _ := url.Parse(raw)
+		if !isCrawlablePageURL(u) {
+			t.Errorf("document URL rejected: %s", raw)
+		}
+	}
+	for _, raw := range []string{"https://example.com/app.js", "https://example.com/site.css", "https://example.com/favicon.ico", "https://example.com/changelog.rss"} {
+		u, _ := url.Parse(raw)
+		if isCrawlablePageURL(u) {
+			t.Errorf("static asset accepted as page: %s", raw)
 		}
 	}
 }

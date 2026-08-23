@@ -19,3 +19,29 @@ func TestExtractDomain_IPv6(t *testing.T) {
 		}
 	}
 }
+
+func TestHeaderFlags(t *testing.T) {
+	headers := headerFlags{}
+	if err := headers.Set("X-Bug-Bounty: w1r3hound"); err != nil {
+		t.Fatal(err)
+	}
+	if got := headers["X-Bug-Bounty"]; got != "w1r3hound" {
+		t.Fatalf("X-Bug-Bounty = %q, want w1r3hound", got)
+	}
+	if err := headers.Set("Authorization: Bearer value:with:colons"); err != nil {
+		t.Fatal(err)
+	}
+	if got := headers["Authorization"]; got != "Bearer value:with:colons" {
+		t.Fatalf("Authorization = %q", got)
+	}
+
+	for _, raw := range []string{
+		"missing-colon",
+		"Bad Header: value",
+		"X-Test:\r\nInjected: yes",
+	} {
+		if err := headers.Set(raw); err == nil {
+			t.Errorf("headerFlags.Set(%q) unexpectedly succeeded", raw)
+		}
+	}
+}

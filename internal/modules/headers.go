@@ -222,8 +222,8 @@ func RunHeaders(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 					Module:      "headers",
 					WSTG:        "WSTG-CONF-07",
 					Title:       fmt.Sprintf("CSP %s contains 'unsafe-inline'", dir),
-					Severity:    core.SevMedium,
-					Description: "'unsafe-inline' in CSP allows inline scripts, significantly weakening XSS protection.",
+					Severity:    core.SevLow,
+					Description: "'unsafe-inline' weakens CSP as a defense-in-depth control; practical impact requires a separate script-injection primitive.",
 				})
 			}
 		}
@@ -236,8 +236,8 @@ func RunHeaders(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 					Module:      "headers",
 					WSTG:        "WSTG-CONF-07",
 					Title:       fmt.Sprintf("CSP %s contains 'unsafe-eval'", dir),
-					Severity:    core.SevMedium,
-					Description: "'unsafe-eval' in CSP allows eval() and similar dynamic code execution.",
+					Severity:    core.SevLow,
+					Description: "'unsafe-eval' permits eval()-style execution and weakens CSP, but is not independently exploitable without attacker-controlled script input.",
 				})
 			}
 		}

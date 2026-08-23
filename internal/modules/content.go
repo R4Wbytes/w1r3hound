@@ -2,6 +2,7 @@ package modules
 
 import (
 	"fmt"
+	"html"
 	"net/url"
 	"regexp"
 	"strings"
@@ -125,8 +126,16 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 	// Fetch main page
 	body, status, err := core.FetchBodyRL(client, target, cfg.UserAgent, cfg.RL)
-	if err != nil || status != 200 {
-		log.Error("Could not fetch main page: %v (status %d)", err, status)
+	if err != nil {
+		log.Error("Could not fetch main page: %v", err)
+		return
+	}
+	if status >= 300 && status < 400 {
+		log.Info("Main page returned redirect status %d — content analysis skipped to avoid cross-host attribution", status)
+		return
+	}
+	if status != 200 {
+		log.Error("Could not fetch main page (status %d)", status)
 		return
 	}
 
@@ -155,7 +164,11 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		if len(nameMatch) > 2 && len(contentMatch) > 1 {
 			key := nameMatch[2]
 			val := contentMatch[1]
-			result.MetaTags[key] = val
+			if isSensitiveMetaName(key) {
+				result.MetaTags[key] = "[REDACTED]"
+			} else {
+				result.MetaTags[key] = val
+			}
 			// Generator tag reveals CMS
 			if strings.EqualFold(key, "generator") {
 				log.Info("META generator: %s", val)
@@ -173,12 +186,16 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	jsFiles := jsFilePattern.FindAllStringSubmatch(body, -1)
 	seen := make(map[string]bool)
 	for _, m := range jsFiles {
-		jsURL := m[1]
-		if seen[jsURL] {
+		jsURL := html.UnescapeString(m[1])
+		fullURL := resolveURL(target, jsURL)
+		if !issameDomain(fullURL, cfg.Domain) {
+			log.Debug("Third-party JavaScript (ignored): %s", fullURL)
 			continue
 		}
-		seen[jsURL] = true
-		fullURL := resolveURL(target, jsURL)
+		if seen[fullURL] {
+			continue
+		}
+		seen[fullURL] = true
 		result.JSFiles = append(result.JSFiles, fullURL)
 	}
 	log.Info("Found %d JavaScript files referenced", len(result.JSFiles))
@@ -321,7 +338,7 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	// to be embedded in frontend code and are NOT secrets.
 	var realSecrets, publicCreds []SecretMatch
 	for _, s := range result.SecretsFound {
-		if isPublicClientCredential(s.Type) {
+		if isPublicClientCredential(s) {
 			publicCreds = append(publicCreds, s)
 		} else {
 			realSecrets = append(realSecrets, s)
@@ -348,7 +365,7 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			WSTG:        "WSTG-INFO-05",
 			Title:       fmt.Sprintf("Public client-side credentials found: %d (not secrets)", len(publicCreds)),
 			Severity:    core.SevInfo,
-			Description: "Client-side credentials (Stripe publishable keys, OAuth client IDs) are designed for frontend use and are not secrets.",
+			Description: "Client-side credentials (Stripe publishable keys, OAuth client IDs, Algolia DocSearch keys, browser analytics/SDK keys) are designed for frontend use and are not secrets.",
 			Data:        publicCreds,
 		})
 	}
@@ -388,6 +405,10 @@ func scanForSecrets(result *ContentResult, text, source string, log *core.Logger
 				log.Debug("Dropping i18n key false positive: %s", maskSecret(matchStr))
 				continue
 			}
+			if sp.Name == "Generic API Key" && strings.Contains(strings.ToLower(matchStr), "pk_live_") {
+				log.Debug("Dropping duplicate generic match for Stripe publishable key")
+				continue
+			}
 
 			// Extract a short context window
 			ctxStart := loc[0] - 30
@@ -407,10 +428,28 @@ func scanForSecrets(result *ContentResult, text, source string, log *core.Logger
 				Source:  source,
 				Context: truncate(ctx, 120),
 			}
+			if publicType := publicClientCredentialType(sm); publicType != "" {
+				sm.Type = publicType
+			}
 			result.SecretsFound = append(result.SecretsFound, sm)
-			log.Warn("Secret [%s] in %s: %s", sp.Name, source, maskSecret(matchStr))
+			if isPublicClientCredential(sm) {
+				log.Info("Public client credential [%s] in %s: %s", sm.Type, source, maskSecret(matchStr))
+			} else {
+				log.Warn("Secret [%s] in %s: %s", sm.Type, source, maskSecret(matchStr))
+			}
 		}
 	}
+}
+
+func isSensitiveMetaName(name string) bool {
+	normalized := strings.ToLower(name)
+	normalized = strings.NewReplacer("-", "", "_", "", ":", "").Replace(normalized)
+	return strings.Contains(normalized, "csrftoken") ||
+		strings.Contains(normalized, "authenticitytoken") ||
+		strings.Contains(normalized, "accesstoken") ||
+		strings.Contains(normalized, "apikey") ||
+		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "nonce")
 }
 
 // isSafeMatch filters out known false-positive patterns.
@@ -580,17 +619,40 @@ func isDocumentationIP(ip string) bool {
 	return docIPs[ip]
 }
 
-// isPublicClientCredential returns true for credential types that are
+// isPublicClientCredential returns true for credential matches that are
 // designed for client-side/frontend use and are NOT secrets. Stripe
 // publishable keys (pk_live_*) are explicitly intended for browser
 // embedding; Google OAuth Client IDs must be public for OAuth redirect
-// flows. Flagging these as HIGH-severity "secrets" is a false positive.
-func isPublicClientCredential(typeName string) bool {
-	switch typeName {
-	case "Stripe Publishable Key", "Google OAuth ID", "Firebase URL":
-		return true
+// flows. Algolia DocSearch keys are public search-only credentials when they
+// appear beside an application ID and index name. Flagging these as
+// HIGH/MEDIUM-severity "secrets" is a false positive.
+func isPublicClientCredential(secret SecretMatch) bool {
+	return publicClientCredentialType(secret) != ""
+}
+
+func publicClientCredentialType(secret SecretMatch) string {
+	switch secret.Type {
+	case "Stripe Publishable Key", "Google OAuth ID", "Firebase URL",
+		"Algolia Search API Key", "Amplitude Browser API Key", "Stigg Client API Key":
+		return secret.Type
 	}
-	return false
+	if secret.Type == "Generic API Key" {
+		context := strings.ToLower(secret.Context)
+		hasAppID := strings.Contains(context, "appid") || strings.Contains(context, "applicationid")
+		if hasAppID && strings.Contains(context, "indexname") {
+			return "Algolia Search API Key"
+		}
+		if strings.Contains(context, "amplitude") && strings.Contains(context, "jsapi") {
+			return "Amplitude Browser API Key"
+		}
+		if strings.Contains(context, "stigg") && strings.Contains(context, "clientapi") {
+			return "Stigg Client API Key"
+		}
+		if strings.Contains(context, "stripe_publishable") || strings.Contains(context, "pk_live_") {
+			return "Stripe Publishable Key"
+		}
+	}
+	return ""
 }
 
 func allGeneric(secrets []SecretMatch) bool {
@@ -633,9 +695,5 @@ func resolveURL(base, ref string) string {
 
 // issameDomain checks if a URL belongs to the target domain (including subdomains).
 func issameDomain(rawURL, domain string) bool {
-	u := strings.TrimPrefix(rawURL, "https://")
-	u = strings.TrimPrefix(u, "http://")
-	host := strings.SplitN(u, "/", 2)[0]
-	host = strings.Split(host, ":")[0]
-	return host == domain || strings.HasSuffix(host, "."+domain)
+	return isSameDomainURL(rawURL, domain)
 }

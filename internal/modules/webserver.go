@@ -280,7 +280,7 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 			conn, err = net.DialTimeout("tcp", addr, cfg.Timeout)
 		}
 		if err == nil {
-			fmt.Fprintf(conn, "GET / SANTA CLAUS/1.1\r\nHost: %s\r\n\r\n", cfg.Domain)
+			writeRawHTTPRequest(conn, "GET / SANTA CLAUS/1.1", cfg.Domain, cfg)
 			conn.SetReadDeadline(time.Now().Add(cfg.Timeout))
 			buf := make([]byte, 4096)
 			n, _ := conn.Read(buf)

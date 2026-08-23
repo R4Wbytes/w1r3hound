@@ -52,7 +52,11 @@ func TestMetafiles_RobotsDisallowDirectoryListing(t *testing.T) {
 	RunMetafiles(cfg, report, core.NewLogger(false))
 
 	var dl *core.Finding
+	var robots *core.Finding
 	for i := range report.Findings {
+		if strings.HasPrefix(report.Findings[i].Title, "robots.txt lists") {
+			robots = &report.Findings[i]
+		}
 		if report.Findings[i].WSTG == "WSTG-CONF-04" &&
 			strings.Contains(report.Findings[i].Title, "Directory listing") {
 			dl = &report.Findings[i]
@@ -61,6 +65,9 @@ func TestMetafiles_RobotsDisallowDirectoryListing(t *testing.T) {
 	}
 	if dl == nil {
 		t.Fatal("expected a WSTG-CONF-04 directory-listing finding for /ftp, got none")
+	}
+	if robots == nil || robots.Severity != core.SevInfo {
+		t.Errorf("robots.txt directives should be informational hints, got %+v", robots)
 	}
 	if dl.Severity != core.SevHigh {
 		t.Errorf("directory listing with backup files must be HIGH, got %s", dl.Severity)
@@ -140,5 +147,68 @@ func TestSensitiveListingFiles(t *testing.T) {
 		if contains(got, safe) {
 			t.Errorf("%q is not a backup/secret/log and must not be flagged", safe)
 		}
+	}
+}
+
+func TestMetafiles_ClientCredentialsAndReflectedWPPathNotFindings(t *testing.T) {
+	var baseURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/robots.txt":
+			_, _ = w.Write([]byte("Sitemap: " + baseURL + "/sitemap.xml\n"))
+		case "/sitemap.xml":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<urlset><url><loc>` + baseURL + `/</loc></url></urlset>`))
+		case "/.well-known/openid-configuration", "/.well-known/oauth-authorization-server":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"grant_types_supported":["authorization_code","client_credentials"]}`))
+		case "/wp-json/":
+			// HackerOne-style claimed-handle profile: the requested path is
+			// reflected repeatedly but this is not a WordPress REST response.
+			_, _ = w.Write([]byte(`<html><meta property="og:title" content="profile - wp-json">` +
+				`<meta property="og:url" content="` + baseURL + `/wp-json"></html>`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	baseURL = srv.URL
+
+	cfg := core.DefaultConfig()
+	cfg.Target = srv.URL
+	cfg.Domain = "127.0.0.1"
+	report := core.NewReport(srv.URL)
+	RunMetafiles(cfg, report, core.NewLogger(false))
+
+	var result *MetafilesResult
+	for i := range report.Findings {
+		f := &report.Findings[i]
+		if strings.Contains(f.Title, "dangerous grant") {
+			t.Errorf("client_credentials is a standard grant, got false finding %q", f.Title)
+		}
+		if strings.Contains(f.Title, "WordPress REST") {
+			t.Errorf("reflected claimed handle produced false WordPress finding %q", f.Title)
+		}
+		if data, ok := f.Data.(MetafilesResult); ok {
+			result = &data
+		}
+	}
+	if result == nil {
+		t.Fatal("metafiles result missing")
+	}
+	if len(result.Sitemaps) != 1 || result.Sitemaps[0] != srv.URL+"/sitemap.xml" {
+		t.Fatalf("duplicate sitemap probes/results were not removed: %v", result.Sitemaps)
+	}
+}
+
+func TestLooksLikeWordPressREST(t *testing.T) {
+	if !looksLikeWordPressREST(`{"namespaces":["wp/v2"],"routes":{}}`, "/wp-json/") {
+		t.Error("valid WordPress REST root rejected")
+	}
+	if looksLikeWordPressREST(`<html>profile wp-json</html>`, "/wp-json/") {
+		t.Error("HTML reflecting the requested handle accepted as WordPress REST")
+	}
+	if !looksLikeWordPressREST(`[]`, "/wp-json/wp/v2/users") {
+		t.Error("empty but valid WordPress users JSON response rejected")
 	}
 }

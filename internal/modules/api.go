@@ -48,6 +48,7 @@ var apiDocPaths = []struct {
 	Path string
 	Type string
 }{
+	{"", "api-docs"},
 	{"/swagger.json", "swagger"},
 	{"/swagger/v1/swagger.json", "swagger"},
 	{"/swagger-ui.html", "swagger-ui"},
@@ -190,7 +191,8 @@ func RunAPI(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		case "api-docs":
 			isDoc = strings.Contains(lower, "swagger") || strings.Contains(lower, "redoc") ||
 				strings.Contains(lower, "openapi") ||
-				(strings.Contains(body, "\"paths\"") && strings.Contains(body, "\"info\""))
+				(strings.Contains(body, "\"paths\"") && strings.Contains(body, "\"info\"")) ||
+				looksLikeStaticAPIDocs(body)
 		case "graphql-schema":
 			isDoc = strings.Contains(body, "__schema") || strings.Contains(body, "\"types\"")
 		}
@@ -210,13 +212,23 @@ func RunAPI(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			}
 			sf.Endpoints = countAPIOperations(specBody)
 			result.SwaggerDocs = append(result.SwaggerDocs, sf)
-			log.Warn("API docs exposed [%s]: %s (%d operations)", doc.Type, url, sf.Endpoints)
+			severity := core.SevLow
+			description := fmt.Sprintf("%s spec accessible without auth — hands attackers the full endpoint list.", doc.Type)
+			title := fmt.Sprintf("API documentation exposed: %s", url)
+			if doc.Path == "" && looksLikeStaticAPIDocs(body) {
+				severity = core.SevInfo
+				description = "Public API documentation discovered at the target root."
+				title = fmt.Sprintf("API documentation discovered: %s", url)
+				log.Info("API documentation discovered at target root: %s", url)
+			} else {
+				log.Warn("API docs exposed [%s]: %s (%d operations)", doc.Type, url, sf.Endpoints)
+			}
 			report.Add(core.Finding{
 				Module:      "apiscan",
 				WSTG:        "WSTG-INFO-06",
-				Title:       fmt.Sprintf("API documentation exposed: %s", url),
-				Severity:    core.SevLow,
-				Description: fmt.Sprintf("%s spec accessible without auth — hands attackers the full endpoint list.", doc.Type),
+				Title:       title,
+				Severity:    severity,
+				Description: description,
 			})
 		}
 	}
@@ -509,6 +521,19 @@ func isSwaggerUIHTML(body string) bool {
 	lower := strings.ToLower(body)
 	return (strings.Contains(lower, "<html") || strings.Contains(lower, "<!doctype")) &&
 		(strings.Contains(lower, "swagger-ui") || strings.Contains(lower, "swagger ui"))
+}
+
+func looksLikeStaticAPIDocs(body string) bool {
+	lower := strings.ToLower(body)
+	titleMatch := probeTitleRe.FindStringSubmatch(body)
+	hasAPITitle := len(titleMatch) > 1 && strings.Contains(strings.ToLower(titleMatch[1]), "api")
+	hasDocsHeading := strings.Contains(lower, "api-documentation") ||
+		strings.Contains(lower, "api documentation") ||
+		strings.Contains(lower, "api reference")
+	hasDocsNavigation := strings.Contains(lower, "toc-wrapper") ||
+		strings.Contains(lower, "endpoint") ||
+		strings.Contains(lower, "getting-started")
+	return hasAPITitle && hasDocsHeading && hasDocsNavigation
 }
 
 // swaggerInitJSRe matches the script src that loads the embedded spec in

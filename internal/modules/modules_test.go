@@ -1,10 +1,51 @@
 package modules
 
 import (
+	"bytes"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/w1r3hound/w1r3hound/internal/core"
 )
+
+func TestSurfaceSummaryUsesGenericEndpointLabel(t *testing.T) {
+	data, err := json.Marshal(SurfaceSummary{Endpoints: []string{"/use-cases"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(data)
+	if !strings.Contains(encoded, `"endpoints"`) || strings.Contains(encoded, `"api_endpoints"`) {
+		t.Fatalf("general route mislabeled as API endpoint: %s", encoded)
+	}
+}
+
+func TestWriteRawHTTPRequestIncludesConfiguredHeaders(t *testing.T) {
+	cfg := core.DefaultConfig()
+	cfg.UserAgent = "test-agent"
+	cfg.RequestHeaders = map[string]string{
+		"X-Bug-Bounty": "w1r3hound",
+		"X-Test":       "safe\r\nInjected: no",
+		"Bad:Name":     "ignored",
+	}
+	var buf bytes.Buffer
+	writeRawHTTPRequest(&buf, "HEAD / HTTP/1.0", "example.com", cfg)
+	request := buf.String()
+
+	for _, want := range []string{
+		"HEAD / HTTP/1.0\r\n",
+		"Host: example.com\r\n",
+		"User-Agent: test-agent\r\n",
+		"X-Bug-Bounty: w1r3hound\r\n",
+	} {
+		if !strings.Contains(request, want) {
+			t.Errorf("raw request missing %q:\n%s", want, request)
+		}
+	}
+	if strings.Contains(request, "\r\nInjected:") || strings.Contains(request, "Bad:Name") {
+		t.Errorf("raw request allowed header injection:\n%s", request)
+	}
+}
 
 // TestMurmur3Canonical verifies our MurmurHash3 x86_32 matches the
 // canonical seed-0 test vector, ensuring Shodan favicon-hash compatibility.
@@ -133,11 +174,16 @@ func TestIsSameDomainURL(t *testing.T) {
 		{"https://distillery.wistia.com/x", false},
 		{"https://***@o4505.ingest.us.sentry.io/123", false},
 		{"https://evil-example.com/x", false}, // suffix trick
+		{"https://example.com:8443/app.js", true},
+		{"https://example.com.evil.test/app.js", false},
 	}
 	for _, c := range cases {
 		if got := isSameDomainURL(c.url, domain); got != c.want {
 			t.Errorf("isSameDomainURL(%q) = %v, want %v", c.url, got, c.want)
 		}
+	}
+	if !isSameDomainURL("http://[::1]:3000/app.js", "::1") {
+		t.Error("same-domain IPv6 URL with an explicit port must be accepted")
 	}
 }
 

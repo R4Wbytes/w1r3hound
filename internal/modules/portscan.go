@@ -195,7 +195,7 @@ func scanOneIP(cfg *core.Config, log *core.Logger, host, ip string, ports []int,
 				State:   "open",
 				Service: serviceNames[p],
 			}
-			pi.Banner = probeBanner(conn, pi.Service, host, bannerWindow)
+			pi.Banner = probeBanner(conn, pi.Service, host, bannerWindow, cfg)
 			conn.Close()
 
 			if refined := refineServiceFromBanner(pi.Banner, pi.Service); refined != "" {
@@ -245,7 +245,7 @@ func dialWithRetry(cfg *core.Config, addr string, dialTimeout time.Duration) (ne
 // everything else (some services wait for input before responding). Passive
 // services (SSH, FTP, SMTP, …) that already greet on connect are unaffected —
 // the active probe only fires when the passive read came up empty.
-func probeBanner(conn net.Conn, service, hostHeader string, bannerWindow time.Duration) string {
+func probeBanner(conn net.Conn, service, hostHeader string, bannerWindow time.Duration, cfg *core.Config) string {
 	buf := make([]byte, 1024)
 
 	conn.SetReadDeadline(time.Now().Add(bannerWindow))
@@ -254,7 +254,7 @@ func probeBanner(conn net.Conn, service, hostHeader string, bannerWindow time.Du
 	if n == 0 {
 		if strings.Contains(service, "http") {
 			conn.SetWriteDeadline(time.Now().Add(bannerWindow))
-			fmt.Fprintf(conn, "HEAD / HTTP/1.0\r\nHost: %s\r\n\r\n", hostHeader)
+			writeRawHTTPRequest(conn, "HEAD / HTTP/1.0", hostHeader, cfg)
 		} else {
 			conn.SetWriteDeadline(time.Now().Add(bannerWindow))
 			conn.Write([]byte("\r\n"))

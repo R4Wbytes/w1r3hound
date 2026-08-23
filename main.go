@@ -12,7 +12,6 @@
 package main
 
 import (
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"net/http"
@@ -55,6 +54,39 @@ var knownModules = map[string]bool{
 	"jsdeep":     true,
 	"endprobe":   true,
 	"takeover":   true,
+}
+
+type headerFlags map[string]string
+
+func (h headerFlags) String() string {
+	return fmt.Sprintf("%d header(s)", len(h))
+}
+
+func (h headerFlags) Set(raw string) error {
+	name, value, ok := strings.Cut(raw, ":")
+	name = strings.TrimSpace(name)
+	if !ok || !validHeaderName(name) {
+		return fmt.Errorf("header must use a valid 'Name: value' format")
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		return fmt.Errorf("header value must not contain CR or LF")
+	}
+	value = strings.TrimSpace(value)
+	h[http.CanonicalHeaderKey(name)] = value
+	return nil
+}
+
+func validHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	const separators = "()<>@,;:\\\"/[]?={} \t"
+	for i := 0; i < len(name); i++ {
+		if name[i] <= 0x20 || name[i] >= 0x7f || strings.ContainsRune(separators, rune(name[i])) {
+			return false
+		}
+	}
+	return true
 }
 
 // safeRun executes a module and contains any panic to that module. Modules
@@ -157,6 +189,7 @@ const helpFooter = `
 
 func main() {
 	cfg := core.DefaultConfig()
+	customHeaders := headerFlags{}
 
 	// ── CLI Flags ──
 	flag.StringVar(&cfg.Target, "target", "", "Target to profile (URL or domain)")
@@ -177,6 +210,8 @@ func main() {
 	flag.IntVar(&cfg.RateLimit, "rate", 0, "Max requests/sec (0 = unlimited)")
 	flag.BoolVar(&cfg.Passive, "passive", false, "Passive mode: no active probing")
 	flag.StringVar(&cfg.UserAgent, "ua", cfg.UserAgent, "Custom User-Agent")
+	flag.Var(customHeaders, "header", "Custom HTTP header in 'Name: value' format (repeatable)")
+	flag.Var(customHeaders, "H", "Custom HTTP header (shorthand, repeatable)")
 	flag.BoolVar(&cfg.SkipSSLCheck, "skip-tls-verify", true, "Skip TLS certificate verification (recon often targets broken/self-signed TLS)")
 	resolverAddr := flag.String("resolver", "", "Custom DNS resolver, e.g. 1.1.1.1 or 8.8.8.8:53 (default: system)")
 	resolversFile := flag.String("resolvers", "", "Path to a resolver list (one ip[:port] per line) — opts subdomain brute-force/permutation into the raw-UDP engine, rotating across the list instead of the single system/-resolver resolver; -rate then governs DNS too")
@@ -204,6 +239,7 @@ func main() {
 	}
 
 	flag.Parse()
+	cfg.RequestHeaders = customHeaders
 
 	// Positional argument support: w1r3hound example.com
 	if cfg.Target == "" && flag.NArg() > 0 {
@@ -245,7 +281,7 @@ func main() {
 		cfg.Modules = append(cfg.Modules, mapped)
 	}
 
-	cfg.Target = detectScheme(cfg.Target, cfg.Timeout, cfg.SkipSSLCheck)
+	cfg.Target = detectScheme(cfg.Target, cfg)
 
 	cfg.Domain = extractDomain(cfg.Target)
 	// Fix #3 (2026-08-07): seed RootDomains with the extracted
@@ -267,6 +303,11 @@ func main() {
 	log.Info("Protocols:   %s", strings.Join(cfg.Modules, ", "))
 	log.Info("Threads:     %d", cfg.Concurrency)
 	log.Info("Mode:        %s", modeLabel(cfg.Passive))
+	if identifier := cfg.RequestHeaders["X-Bug-Bounty"]; identifier != "" {
+		log.Info("Research ID: X-Bug-Bounty: %s", identifier)
+	} else if len(cfg.RequestHeaders) > 0 {
+		log.Info("Custom HTTP headers: %d configured (values hidden)", len(cfg.RequestHeaders))
+	}
 	if cfg.SkipSSLCheck {
 		log.Warn("TLS verification disabled — recon traffic is not authenticated (pass -skip-tls-verify=false to enforce)")
 	}
@@ -529,18 +570,13 @@ func mapProtocol(name string) string {
 	}
 }
 
-func detectScheme(target string, timeout time.Duration, skipTLS bool) string {
+func detectScheme(target string, cfg *core.Config) string {
 	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
 		return target
 	}
-	client := &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: skipTLS},
-		},
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	client := core.NewHTTPClient(cfg)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
 	if resp, err := client.Head("https://" + target); err == nil {
 		resp.Body.Close()

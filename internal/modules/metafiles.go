@@ -63,9 +63,9 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 			report.Add(core.Finding{
 				Module:      "metafiles",
 				WSTG:        "WSTG-INFO-03",
-				Title:       fmt.Sprintf("robots.txt exposes %d hidden paths", len(rd.Disallowed)),
-				Severity:    core.SevLow,
-				Description: "Disallowed paths may reveal sensitive directories.",
+				Title:       fmt.Sprintf("robots.txt lists %d disallowed paths", len(rd.Disallowed)),
+				Severity:    core.SevInfo,
+				Description: "Robots directives are public reconnaissance hints; validate each path separately before treating it as an exposure.",
 				Data:        rd.Disallowed,
 			})
 			// A robots.txt Disallow list is the site owner's own inventory of
@@ -93,6 +93,15 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 	if result.RobotsTxt != nil {
 		sitemapURLs = append(sitemapURLs, result.RobotsTxt.SitemapURLs...)
 	}
+	seenSitemaps := make(map[string]bool)
+	uniqueSitemaps := sitemapURLs[:0]
+	for _, surl := range sitemapURLs {
+		if surl != "" && !seenSitemaps[surl] {
+			seenSitemaps[surl] = true
+			uniqueSitemaps = append(uniqueSitemaps, surl)
+		}
+	}
+	sitemapURLs = uniqueSitemaps
 
 	for _, surl := range sitemapURLs {
 		body, status, err := core.FetchBodyRL(client, surl, cfg.UserAgent, cfg.RL)
@@ -187,9 +196,6 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 				strings.Contains(lowerBody, `urn:ietf:params:oauth:grant-type:password`) {
 				dangerousGrants = append(dangerousGrants, "password (resource owner)")
 			}
-			if strings.Contains(lowerBody, `"client_credentials"`) {
-				dangerousGrants = append(dangerousGrants, "client_credentials (machine-to-machine)")
-			}
 			if strings.Contains(lowerBody, `"implicit"`) {
 				dangerousGrants = append(dangerousGrants, "implicit (deprecated)")
 			}
@@ -215,8 +221,8 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 	}{
 		{"/pf/heartbeat.ping", "PingFederate heartbeat", "OK"},
 		{"/pf-ws/rest/sessionMgmt/", "PingFederate session management API", ""},
-		{"/wp-json/", "WordPress REST API namespace", "wp-json"},
-		{"/wp-json/wp/v2/users", "WordPress user enumeration", "\"id\""},
+		{"/wp-json/", "WordPress REST API namespace", ""},
+		{"/wp-json/wp/v2/users", "WordPress user enumeration", ""},
 		{"/wp-signup.php", "WordPress signup page", "wp-signup"},
 		{"/xmlrpc.php", "WordPress XML-RPC", "XML-RPC"},
 		{"/wp-admin/maint/repair.php", "WordPress database repair", "repair"},
@@ -235,6 +241,10 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 			}
 			if catchAll.matches(status, len(body)) {
 				log.Debug("Sensitive path %s matches catch-all signature, skipping", tp.Path)
+				continue
+			}
+			if strings.HasPrefix(tp.Path, "/wp-json/") && !looksLikeWordPressREST(body, tp.Path) {
+				log.Debug("Sensitive path %s is not a WordPress REST JSON response, skipping", tp.Path)
 				continue
 			}
 			if tp.Marker != "" && !strings.Contains(strings.ToLower(body), strings.ToLower(tp.Marker)) {
@@ -334,6 +344,16 @@ func extractSitemapURLs(body string) []string {
 	return urls
 }
 
+func looksLikeWordPressREST(body, path string) bool {
+	trimmed := strings.TrimSpace(body)
+	if path == "/wp-json/" {
+		return strings.HasPrefix(trimmed, "{") &&
+			strings.Contains(trimmed, `"namespaces"`) &&
+			strings.Contains(trimmed, `"routes"`)
+	}
+	return strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{")
+}
+
 // ── security.txt field analysis (RFC 9116) ──
 
 // secTxtFieldRe matches RFC 9116 field lines: "FieldName: value".
@@ -406,24 +426,24 @@ var sensitiveListingExts = []string{
 // in a directory listing is always a disclosure — infrastructure-as-code files
 // that expose internal architecture, build processes, and often credentials.
 var sensitiveListingNames = map[string]bool{
-	"dockerfile":         true,
-	"docker-compose.yml": true,
+	"dockerfile":          true,
+	"docker-compose.yml":  true,
 	"docker-compose.yaml": true,
-	".dockerenv":         true,
-	"makefile":           true,
-	"vagrantfile":        true,
-	"jenkinsfile":        true,
-	".gitlab-ci.yml":     true,
-	".travis.yml":        true,
-	".env.example":       true,
-	"wp-config.php":      true,
-	"web.config":         true,
-	"config.php":         true,
-	"database.yml":       true,
-	".htpasswd":          true,
-	".htaccess":          true,
-	".npmrc":             true,
-	".pypirc":            true,
+	".dockerenv":          true,
+	"makefile":            true,
+	"vagrantfile":         true,
+	"jenkinsfile":         true,
+	".gitlab-ci.yml":      true,
+	".travis.yml":         true,
+	".env.example":        true,
+	"wp-config.php":       true,
+	"web.config":          true,
+	"config.php":          true,
+	"database.yml":        true,
+	".htpasswd":           true,
+	".htaccess":           true,
+	".npmrc":              true,
+	".pypirc":             true,
 }
 
 // logFileRe matches log files including rotated ones, where ".log" is not the

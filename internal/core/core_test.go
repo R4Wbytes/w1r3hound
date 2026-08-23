@@ -3,7 +3,10 @@ package core
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -73,5 +76,71 @@ func TestDefaultConfig_Limits(t *testing.T) {
 	}
 	if c.Resolver == nil {
 		t.Error("Resolver must default to non-nil (system resolver)")
+	}
+}
+
+func TestNewHTTPClient_RequestHeadersOnRedirects(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		seen []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("X-Bug-Bounty"))
+		mu.Unlock()
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	cfg := DefaultConfig()
+	cfg.RequestHeaders = map[string]string{"X-Bug-Bounty": "w1r3hound"}
+	resp, err := NewHTTPClient(cfg).Get(srv.URL + "/start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 {
+		t.Fatalf("expected initial and redirected requests, got %d", len(seen))
+	}
+	for i, value := range seen {
+		if value != "w1r3hound" {
+			t.Errorf("request %d X-Bug-Bounty = %q, want w1r3hound", i, value)
+		}
+	}
+}
+
+func TestNewHTTPClient_StopsTargetRedirectAtDifferentHost(t *testing.T) {
+	var sinkHits int
+	sink := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		sinkHits++
+	}))
+	defer sink.Close()
+	crossHostURL := strings.Replace(sink.URL, "127.0.0.1", "localhost", 1)
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, crossHostURL, http.StatusFound)
+	}))
+	defer source.Close()
+
+	cfg := DefaultConfig()
+	cfg.Domain = "127.0.0.1"
+	resp, err := NewHTTPClient(cfg).Get(source.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want original 302 redirect", resp.StatusCode)
+	}
+	if sinkHits != 0 {
+		t.Fatalf("cross-host redirect was followed %d time(s)", sinkHits)
 	}
 }

@@ -78,6 +78,7 @@ func TestApiScan_StackTraceDisclosure(t *testing.T) {
 
 	cfg := core.DefaultConfig()
 	cfg.Target = srv.URL
+	cfg.Domain = "127.0.0.1"
 	report := core.NewReport(srv.URL)
 	RunAPI(cfg, report, core.NewLogger(false))
 
@@ -93,5 +94,39 @@ func TestApiScan_StackTraceDisclosure(t *testing.T) {
 	}
 	if f.Severity != core.SevMedium {
 		t.Errorf("stack-trace disclosure should be MEDIUM, got %s", f.Severity)
+	}
+}
+
+func TestAPIScan_StaticDocumentationAtRoot(t *testing.T) {
+	docs := `<!doctype html><html><head><title>Example API</title></head><body>` +
+		`<div class="toc-wrapper"><a href="/getting-started">Getting Started</a></div>` +
+		`<h1 id="example-api-documentation">Example API Documentation</h1></body></html>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			_, _ = w.Write([]byte(docs))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	cfg := core.DefaultConfig()
+	cfg.Target = srv.URL
+	cfg.Domain = "127.0.0.1"
+	report := core.NewReport(srv.URL)
+	RunAPI(cfg, report, core.NewLogger(false))
+
+	var docsFinding *core.Finding
+	for i := range report.Findings {
+		if report.Findings[i].Title == "API documentation discovered: "+srv.URL {
+			docsFinding = &report.Findings[i]
+			break
+		}
+	}
+	if docsFinding == nil {
+		t.Fatal("static API documentation at the target root was not detected")
+	}
+	if docsFinding.Severity != core.SevInfo {
+		t.Errorf("intentionally public root documentation should be INFO, got %s", docsFinding.Severity)
 	}
 }

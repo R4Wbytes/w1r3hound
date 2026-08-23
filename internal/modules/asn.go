@@ -1,9 +1,13 @@
 package modules
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/w1r3hound/w1r3hound/internal/core"
@@ -17,11 +21,12 @@ import (
 // ══════════════════════════════════════════════
 
 type ASNResult struct {
-	TargetIP    string      `json:"target_ip"`
-	ASN         string      `json:"asn,omitempty"`
-	ASNName     string      `json:"asn_name,omitempty"`
-	Prefixes    []ASNPrefix `json:"prefixes,omitempty"`
-	RelatedASNs []ASNInfo   `json:"related_asns,omitempty"`
+	TargetIP     string      `json:"target_ip"`
+	TargetPrefix string      `json:"target_prefix,omitempty"`
+	ASN          string      `json:"asn,omitempty"`
+	ASNName      string      `json:"asn_name,omitempty"`
+	Prefixes     []ASNPrefix `json:"prefixes,omitempty"`
+	RelatedASNs  []ASNInfo   `json:"related_asns,omitempty"`
 }
 
 type ASNPrefix struct {
@@ -65,11 +70,21 @@ func RunASN(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	result := ASNResult{TargetIP: targetIP}
 	log.Info("Target resolves to %s", targetIP)
 
+	// Loopback, RFC1918/ULA and other non-global addresses are not announced
+	// through public BGP and therefore cannot have an origin ASN. Querying
+	// BGPView for them only produces a failed lookup plus a misleading
+	// "ASN mapping: unknown" report entry.
+	if !isPublicASNAddress(targetIP) {
+		log.Info("Target resolves to a non-public address — public ASN/CIDR mapping not applicable, skipping")
+		return
+	}
+
 	// Detect if the IP belongs to a known CDN (the ASN would be the CDN's, not
 	// the org's). In that case the org-name search below is the useful path.
-	if cdn := detectCDNByIP(targetIP); cdn != "" {
-		log.Warn("Target IP is behind %s CDN — ASN reflects the CDN, not the origin", cdn)
-		result.ASNName = cdn + " (CDN — not origin)"
+	cdnName := detectCDNByIP(targetIP)
+	if cdnName != "" {
+		log.Warn("Target IP is behind %s CDN — ASN reflects the CDN, not the origin", cdnName)
+		result.ASNName = cdnName + " (CDN — not origin)"
 	}
 
 	// 2. Look up ASN for the IP via BGPView API
@@ -136,6 +151,23 @@ func RunASN(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		}
 	}
 
+	// BGPView is occasionally unavailable or unresolvable. Fall back to
+	// HackerTarget's keyless ASN lookup so one upstream outage does not turn a
+	// valid public IP into an "unknown" mapping.
+	if result.ASN == "" {
+		asn, name, prefix := lookupASNHackerTarget(client, targetIP, cfg)
+		if asn != "" {
+			result.ASN = asn
+			result.TargetPrefix = prefix
+			if cdnName != "" {
+				result.ASNName = fmt.Sprintf("%s (%s CDN — not origin)", name, cdnName)
+			} else {
+				result.ASNName = name
+			}
+			log.Info("ASN fallback: %s (%s), target prefix %s", result.ASN, name, prefix)
+		}
+	}
+
 	// 4. Search for related ASNs by organisation name
 	orgName := strings.Split(domain, ".")[0]
 	searchURL := fmt.Sprintf("https://api.bgpview.io/search?query_term=%s", orgName)
@@ -190,6 +222,51 @@ func RunASN(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		Description: "IP ranges owned by the organisation, discoverable beyond DNS.",
 		Data:        result,
 	})
+}
+
+func lookupASNHackerTarget(client *http.Client, targetIP string, cfg *core.Config) (asn, name, prefix string) {
+	endpoint := "https://api.hackertarget.com/aslookup/?q=" + url.QueryEscape(targetIP)
+	body, status, err := core.FetchBodyRL(client, endpoint, cfg.UserAgent, cfg.RL)
+	if err != nil || status != http.StatusOK {
+		return "", "", ""
+	}
+	return parseHackerTargetASN(body)
+}
+
+func parseHackerTargetASN(body string) (asn, name, prefix string) {
+	reader := csv.NewReader(strings.NewReader(strings.TrimSpace(body)))
+	reader.FieldsPerRecord = -1
+	record, err := reader.Read()
+	if err != nil || len(record) < 4 {
+		return "", "", ""
+	}
+	asnNumber := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(record[1])), "AS")
+	if _, err := strconv.Atoi(asnNumber); err != nil {
+		return "", "", ""
+	}
+	return "AS" + asnNumber, strings.TrimSpace(record[3]), strings.TrimSpace(record[2])
+}
+
+func isPublicASNAddress(raw string) bool {
+	ip := net.ParseIP(raw)
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return false
+	}
+	for _, cidr := range []string{
+		"100.64.0.0/10",   // shared carrier-grade NAT
+		"192.0.0.0/24",    // IETF protocol assignments
+		"192.0.2.0/24",    // TEST-NET-1
+		"198.18.0.0/15",   // benchmark testing
+		"198.51.100.0/24", // TEST-NET-2
+		"203.0.113.0/24",  // TEST-NET-3
+		"2001:db8::/32",   // IPv6 documentation
+	} {
+		_, block, err := net.ParseCIDR(cidr)
+		if err == nil && block.Contains(ip) {
+			return false
+		}
+	}
+	return true
 }
 
 // detectCDNByIP checks if an IP falls in well-known CDN ranges (rough prefixes).

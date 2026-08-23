@@ -94,3 +94,94 @@ func TestMaskSecret_NoPanicShort(t *testing.T) {
 		_ = maskSecret(s) // must not panic
 	}
 }
+
+// IP-literal targets have no domain namespace for CT/passive DNS discovery,
+// and Wayback results for shared/reused IPs cannot be attributed to the
+// application under test.
+func TestIsIPLiteral(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "192.168.1.10", "::1", "[::1]", "2001:db8::1"} {
+		if !isIPLiteral(host) {
+			t.Errorf("isIPLiteral(%q) = false, want true", host)
+		}
+	}
+	for _, host := range []string{"localhost", "juice-shop.local", "example.com"} {
+		if isIPLiteral(host) {
+			t.Errorf("isIPLiteral(%q) = true, want false", host)
+		}
+	}
+}
+
+func TestIsPublicASNAddress(t *testing.T) {
+	for _, ip := range []string{"8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"} {
+		if !isPublicASNAddress(ip) {
+			t.Errorf("isPublicASNAddress(%q) = false, want true", ip)
+		}
+	}
+	for _, ip := range []string{
+		"127.0.0.1", "10.0.0.1", "192.168.1.1", "100.64.0.1",
+		"192.0.2.1", "198.51.100.1", "203.0.113.1",
+		"::1", "fc00::1", "fe80::1", "2001:db8::1", "not-an-ip",
+	} {
+		if isPublicASNAddress(ip) {
+			t.Errorf("isPublicASNAddress(%q) = true, want false", ip)
+		}
+	}
+}
+
+func TestIsPublicClientCredential_AlgoliaDocSearch(t *testing.T) {
+	docSearch := SecretMatch{
+		Type:    "Generic API Key",
+		Context: "appId: '8NAIIMTFB5', apiKey: 'masked', indexName: 'docs'",
+	}
+	if !isPublicClientCredential(docSearch) {
+		t.Error("Algolia DocSearch browser key should be classified as a public client credential")
+	}
+	for name, tc := range map[string]struct{ context, wantType string }{
+		"amplitude": {`analytics:{config:{amplitude:{enabled:true,jsApiKey:"masked"}}}`, "Amplitude Browser API Key"},
+		"stigg":     {`stigg:{clientApiKey:"client-masked"}`, "Stigg Client API Key"},
+		"stripe":    {`stripe_publishable_api_key:"pk_live_masked"`, "Stripe Publishable Key"},
+	} {
+		match := SecretMatch{Type: "Generic API Key", Context: tc.context}
+		if !isPublicClientCredential(match) {
+			t.Errorf("%s browser credential should be public", name)
+		}
+		if got := publicClientCredentialType(match); got != tc.wantType {
+			t.Errorf("%s credential type = %q, want %q", name, got, tc.wantType)
+		}
+	}
+	adminLike := SecretMatch{
+		Type:    "Generic API Key",
+		Context: "apiKey: 'masked', role: 'admin'",
+	}
+	if isPublicClientCredential(adminLike) {
+		t.Error("generic API key without DocSearch context must remain a potential secret")
+	}
+	if !isPublicClientCredential(SecretMatch{Type: "Google OAuth ID"}) {
+		t.Error("existing public OAuth credential classification regressed")
+	}
+}
+
+func TestParseHackerTargetASN(t *testing.T) {
+	asn, name, prefix := parseHackerTargetASN(
+		`"172.64.151.42","13335","172.64.151.0/24","CLOUDFLARENET, US"`,
+	)
+	if asn != "AS13335" || name != "CLOUDFLARENET, US" || prefix != "172.64.151.0/24" {
+		t.Fatalf("unexpected ASN fallback parse: %q %q %q", asn, name, prefix)
+	}
+	if asn, _, _ := parseHackerTargetASN("error check your query"); asn != "" {
+		t.Fatalf("error response parsed as ASN %q", asn)
+	}
+}
+
+func TestScanForSecrets_DeduplicatesStripePublishableKey(t *testing.T) {
+	var result ContentResult
+	scanForSecrets(
+		&result,
+		`stripe_publishable_api_key:"pk_live_1234567890abcdefghijklmn"`,
+		"test",
+		core.NewLogger(false),
+	)
+	if len(result.SecretsFound) != 1 || result.SecretsFound[0].Type != "Stripe Publishable Key" {
+		t.Fatalf("Stripe publishable key should have one specific match, got %+v", result.SecretsFound)
+	}
+}

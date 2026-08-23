@@ -21,7 +21,7 @@ import (
 
 type SurfaceSummary struct {
 	Parameters []string `json:"parameters,omitempty"`
-	Endpoints  []string `json:"api_endpoints,omitempty"`
+	Endpoints  []string `json:"endpoints,omitempty"`
 	URLs       []string `json:"urls,omitempty"`
 	IPRanges   []string `json:"ip_ranges,omitempty"`
 }
@@ -43,7 +43,7 @@ func RunSurfaceSummary(cfg *core.Config, report *core.ReconReport, log *core.Log
 	}
 
 	log.Module("SURFACE // Aggregated Attack Surface")
-	log.Info("Parameters: %d · API endpoints: %d · URLs: %d · IP ranges: %d",
+	log.Info("Parameters: %d · Endpoints/routes: %d · URLs: %d · IP ranges: %d",
 		len(sum.Parameters), len(sum.Endpoints), len(sum.URLs), len(sum.IPRanges))
 
 	report.Add(core.Finding{

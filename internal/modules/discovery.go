@@ -30,6 +30,10 @@ type WaybackResult struct {
 func RunWayback(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	log.Module("ARCHAEOLOGY // Wayback Machine Archive Mining")
 
+	if isIPLiteral(cfg.Domain) {
+		log.Info("Target is an IP literal — Wayback Machine domain discovery not applicable, skipping")
+		return
+	}
 	if isNonRoutableDomain(cfg.Domain) {
 		log.Info("Target is a non-routable hostname — Wayback Machine not applicable, skipping")
 		return
@@ -42,6 +46,11 @@ func RunWayback(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	resumeKey := ""
 	page := 0
 	maxPages := 20 // safety limit
+	totalLimit := cfg.WaybackLimit
+	if totalLimit < 1 {
+		log.Info("Wayback URL limit is %d — nothing to collect", totalLimit)
+		return
+	}
 
 	// FIX #4: if the wildcard subdomain query returns zero rows, fall back
 	// to a domain-scope query. Targets hosted behind CDNs (Wix, Cloudflare,
@@ -56,8 +65,9 @@ func RunWayback(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	queryIdx := 0
 
 	for queryIdx < len(queryTemplates) {
-		for page < maxPages {
-			apiURL := fmt.Sprintf(queryTemplates[queryIdx], domain, cfg.WaybackLimit)
+		for page < maxPages && len(allRows) < totalLimit {
+			remaining := totalLimit - len(allRows)
+			apiURL := fmt.Sprintf(queryTemplates[queryIdx], domain, remaining)
 			if resumeKey != "" {
 				apiURL += "&resumeKey=" + url.QueryEscape(resumeKey)
 			}
@@ -76,21 +86,12 @@ func RunWayback(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 				break
 			}
 
-			// Check for resumeKey in last row
-			gotMore := false
-			if len(rows) > 0 {
-				lastRow := rows[len(rows)-1]
-				if len(lastRow) == 1 && !strings.Contains(lastRow[0], "://") {
-					resumeKey = lastRow[0]
-					rows = rows[:len(rows)-1] // remove resumeKey row
-					gotMore = true
-				}
-			}
-
-			allRows = append(allRows, rows...)
+			var gotMore bool
+			rows, resumeKey, gotMore = parseWaybackPage(rows)
+			allRows = appendWaybackRows(allRows, rows, totalLimit)
 			page++
 
-			if !gotMore {
+			if !gotMore || len(allRows) >= totalLimit {
 				break
 			}
 			log.Debug("Wayback page %d (query %d): %d rows (resuming...)", page, queryIdx, len(rows))
@@ -122,8 +123,8 @@ func RunWayback(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		".git", ".svn", ".htaccess", ".htpasswd", ".DS_Store",
 	}
 
-	for i, row := range rows {
-		if i == 0 || len(row) == 0 { // skip header
+	for _, row := range rows {
+		if len(row) == 0 || row[0] == "original" {
 			continue
 		}
 		url := row[0]
@@ -196,6 +197,36 @@ func RunWayback(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		Description: "Historical URLs may expose forgotten endpoints, backup files, and parameters.",
 		Data:        result,
 	})
+}
+
+func parseWaybackPage(rows [][]string) (data [][]string, resumeKey string, hasMore bool) {
+	for _, row := range rows {
+		if len(row) == 0 || row[0] == "original" {
+			continue
+		}
+		data = append(data, row)
+	}
+	if len(data) == 0 {
+		return data, "", false
+	}
+	last := data[len(data)-1]
+	if len(last) == 1 && !strings.Contains(last[0], "://") {
+		return data[:len(data)-1], last[0], true
+	}
+	return data, "", false
+}
+
+func appendWaybackRows(dst, rows [][]string, limit int) [][]string {
+	for _, row := range rows {
+		if len(dst) >= limit {
+			break
+		}
+		if len(row) == 0 || row[0] == "original" {
+			continue
+		}
+		dst = append(dst, row)
+	}
+	return dst
 }
 
 // ══════════════════════════════════════════════
@@ -596,7 +627,9 @@ func RunCloudStorage(cfg *core.Config, report *core.ReconReport, log *core.Logge
 // ══════════════════════════════════════════════
 
 type DirBruteResult struct {
-	Found []DirEntry `json:"found"`
+	Found    []DirEntry `json:"found"`
+	Complete bool       `json:"complete"`
+	Error    string     `json:"error,omitempty"`
 }
 
 type DirEntry struct {
@@ -669,6 +702,10 @@ func prometheusExposure(body string) (metricCount int, leaks []string) {
 		{"process_start_time", "process start time / uptime"},
 		{"nodejs_heap", "V8 heap internals"},
 		{"http_request", "HTTP request statistics"},
+		{"users_registered", "registered-user counts"},
+		{"wallet_balance", "aggregate wallet balances"},
+		{"orders_placed", "order volumes"},
+		{"_challenges_", "application challenge inventory/progress"},
 	}
 	seen := map[string]bool{}
 	for _, c := range checks {
@@ -861,6 +898,7 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	client := core.NewHTTPClient(cfg)
 	target := normalizeTarget(cfg.Target)
 	paths := loadDirPaths(cfg, log)
+	result := DirBruteResult{Complete: true}
 	if cfg.DirExtensions != "" {
 		before := len(paths)
 		paths = expandDirExtensions(paths, cfg.DirExtensions)
@@ -872,11 +910,30 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	// signature (status, body length, title) to filter false positives.
 	log.Info("Calibrating soft-404 baseline...")
 	baseline404 := detectSoft404Baseline(client, target, cfg.UserAgent, cfg.RL)
+	if baseline404.status == 0 {
+		resp, err := core.DoRequestRL(client, "GET", target, cfg.UserAgent, cfg.RL)
+		if err != nil {
+			result.Complete = false
+			result.Error = "target unreachable during soft-404 calibration"
+			log.Error("Directory discovery aborted: target is unreachable: %v", err)
+			report.Add(core.Finding{
+				Module:      "dirbrute",
+				WSTG:        "WSTG-CONF-03",
+				Title:       "Directory discovery incomplete: target unreachable",
+				Severity:    core.SevInfo,
+				Description: "The target did not respond during calibration, so no path requests were evaluated. A zero-result claim would be misleading; retry when the target is available.",
+				Data:        result,
+			})
+			return
+		}
+		resp.Body.Close()
+		log.Warn("Soft-404 calibration requests failed while the target root is reachable — continuing with post-scan cluster analysis")
+		baseline404 = soft404Baseline{status: 404}
+	}
 	if baseline404.status == 200 {
 		log.Warn("Soft-404 detected: server returns 200 for non-existent pages (body size ~%d)", baseline404.bodyLen)
 	}
 
-	result := DirBruteResult{}
 	var promHits []promHit
 	var listingHits []listingHit
 	var (
@@ -1127,7 +1184,7 @@ func detectSoft404Baseline(client *http.Client, target, ua string, rl *core.Rate
 	}
 
 	if len(baselines) == 0 {
-		return soft404Baseline{status: 404}
+		return soft404Baseline{}
 	}
 
 	// Verify baselines are consistent (all same title = confirmed soft-404 pattern)

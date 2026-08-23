@@ -2,6 +2,8 @@ package modules
 
 import (
 	"fmt"
+	"html"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -264,6 +266,10 @@ func gatherJSFiles(cfg *core.Config, target string) []string {
 	// From shared context (content module populates this)
 	cfg.SharedMu.Lock()
 	for _, js := range cfg.SharedJSFiles {
+		js = html.UnescapeString(js)
+		if !isSameDomainURL(js, cfg.Domain) {
+			continue
+		}
 		if !seen[js] {
 			seen[js] = true
 			jsFiles = append(jsFiles, js)
@@ -277,7 +283,10 @@ func gatherJSFiles(cfg *core.Config, target string) []string {
 	if err == nil && status == 200 {
 		for _, m := range jsFilePattern.FindAllStringSubmatch(body, -1) {
 			if len(m) > 1 {
-				full := resolveURL(target, m[1])
+				full := resolveURL(target, html.UnescapeString(m[1]))
+				if !isSameDomainURL(full, cfg.Domain) {
+					continue
+				}
 				if !seen[full] {
 					seen[full] = true
 					jsFiles = append(jsFiles, full)
@@ -290,13 +299,16 @@ func gatherJSFiles(cfg *core.Config, target string) []string {
 
 // isSameDomainURL returns true if the URL belongs to the target domain.
 func isSameDomainURL(rawURL, domain string) bool {
-	u := rawURL
-	u = strings.TrimPrefix(u, "https://")
-	u = strings.TrimPrefix(u, "http://")
-	u = strings.TrimPrefix(u, "//")
-	host := strings.SplitN(u, "/", 2)[0]
-	host = strings.SplitN(host, "?", 2)[0]
-	host = strings.SplitN(host, "@", 2)[len(strings.SplitN(host, "@", 2))-1] // strip user:pass@
+	candidate := rawURL
+	if strings.HasPrefix(candidate, "//") {
+		candidate = "https:" + candidate
+	}
+	u, err := url.Parse(candidate)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	domain = strings.TrimSuffix(strings.ToLower(domain), ".")
 	return host == domain || strings.HasSuffix(host, "."+domain)
 }
 

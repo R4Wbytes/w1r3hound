@@ -22,23 +22,24 @@ import (
 // ──────────────────────────────────────────────
 
 type Config struct {
-	Target        string
-	Domain        string        // extracted root domain
-	Concurrency   int           // max goroutines per module
-	Timeout       time.Duration // per-request timeout
-	UserAgent     string
-	OutputFile    string // path for JSON report
-	Verbose       bool
-	Modules       []string // which modules to run ("all" = everything)
-	Wordlist      string   // path to a wordlist for subdomain bruteforce
-	DirWordlist   string   // path to a wordlist for directory/file bruteforce (falls back to the embedded list when empty)
-	DirExtensions string   // comma-separated extensions appended to each dirbrute word (e.g. ".bak,.php,.zip,~")
-	Resolvers     []string // ip[:port] pool for the raw-UDP DNS brute-force engine; empty = use Resolver (stdlib) as today
-	Ports         string   // port spec for scanner (e.g. "top100", "1-1024", "full")
-	RateLimit     int      // requests per second (0 = unlimited)
-	SkipSSLCheck  bool
-	Passive       bool         // passive-only mode (no active probing)
-	RL            *RateLimiter // rate limiter shared across modules
+	Target         string
+	Domain         string        // extracted root domain
+	Concurrency    int           // max goroutines per module
+	Timeout        time.Duration // per-request timeout
+	UserAgent      string
+	OutputFile     string // path for JSON report
+	Verbose        bool
+	Modules        []string // which modules to run ("all" = everything)
+	Wordlist       string   // path to a wordlist for subdomain bruteforce
+	DirWordlist    string   // path to a wordlist for directory/file bruteforce (falls back to the embedded list when empty)
+	DirExtensions  string   // comma-separated extensions appended to each dirbrute word (e.g. ".bak,.php,.zip,~")
+	Resolvers      []string // ip[:port] pool for the raw-UDP DNS brute-force engine; empty = use Resolver (stdlib) as today
+	Ports          string   // port spec for scanner (e.g. "top100", "1-1024", "full")
+	RateLimit      int      // requests per second (0 = unlimited)
+	SkipSSLCheck   bool
+	Passive        bool              // passive-only mode (no active probing)
+	RL             *RateLimiter      // rate limiter shared across modules
+	RequestHeaders map[string]string // headers added to every HTTP request
 
 	// Cancel is the root context cancellation function. Modules that perform
 	// raw net.Dial/tls.Dial (outside the shared HTTP client) should derive a
@@ -69,7 +70,7 @@ type Config struct {
 	SharedParams     []string // discovered parameters
 	SharedJSFiles    []string // discovered JS file URLs
 	SharedIPs        []string // resolved IPs / CIDR ranges
-	SharedEndpoints  []string // API endpoints found in JS
+	SharedEndpoints  []string // endpoints/routes found in JS
 
 	sharedSubdomainsSeen map[string]bool
 	sharedURLsSeen       map[string]bool
@@ -237,16 +238,50 @@ func NewHTTPClient(cfg *Config) *http.Client {
 		IdleConnTimeout:     90 * time.Second,
 		DisableKeepAlives:   false,
 	}
+	var roundTripper http.RoundTripper = transport
+	if len(cfg.RequestHeaders) > 0 {
+		headers := make(map[string]string, len(cfg.RequestHeaders))
+		for name, value := range cfg.RequestHeaders {
+			headers[name] = value
+		}
+		roundTripper = &requestHeaderTransport{base: transport, headers: headers}
+	}
 	return &http.Client{
-		Transport: transport,
+		Transport: roundTripper,
 		Timeout:   cfg.Timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("too many redirects")
 			}
+			if len(via) > 0 {
+				initialHost := via[0].URL.Hostname()
+				if isTargetHost(initialHost, cfg.Domain) && !strings.EqualFold(req.URL.Hostname(), initialHost) {
+					return http.ErrUseLastResponse
+				}
+			}
 			return nil
 		},
 	}
+}
+
+func isTargetHost(host, domain string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	domain = strings.TrimSuffix(strings.ToLower(domain), ".")
+	return host == domain || strings.HasSuffix(host, "."+domain)
+}
+
+type requestHeaderTransport struct {
+	base    http.RoundTripper
+	headers map[string]string
+}
+
+func (t *requestHeaderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	cloned := req.Clone(req.Context())
+	cloned.Header = req.Header.Clone()
+	for name, value := range t.headers {
+		cloned.Header.Set(name, value)
+	}
+	return t.base.RoundTrip(cloned)
 }
 
 // DoRequest is a convenience wrapper that adds the configured User-Agent

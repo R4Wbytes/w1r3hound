@@ -110,3 +110,34 @@ func TestRunHeaders_DetectsFrameworkFromBody(t *testing.T) {
 	}
 	t.Fatal("no technology-stack finding produced")
 }
+
+func TestRunHeaders_CSPUnsafeDirectivesAreDefenseInDepth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval'")
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin")
+		w.Header().Set("Permissions-Policy", "camera=()")
+		_, _ = w.Write([]byte("<html><title>test</title></html>"))
+	}))
+	defer srv.Close()
+
+	cfg := core.DefaultConfig()
+	cfg.Target = srv.URL
+	report := core.NewReport(srv.URL)
+	RunHeaders(cfg, report, core.NewLogger(false))
+
+	count := 0
+	for _, f := range report.Findings {
+		if strings.HasPrefix(f.Title, "CSP ") && strings.Contains(f.Title, "unsafe-") {
+			count++
+			if f.Severity != core.SevLow {
+				t.Errorf("%q severity = %s, want LOW", f.Title, f.Severity)
+			}
+		}
+	}
+	if count != 2 {
+		t.Fatalf("expected two CSP unsafe-directive findings, got %d", count)
+	}
+}
