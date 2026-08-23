@@ -131,11 +131,15 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		return
 	}
 	if status >= 300 && status < 400 {
-		log.Info("Main page returned redirect status %d — content analysis skipped to avoid cross-host attribution", status)
+		log.Info("Main page returned redirect status %d — content analysis skipped to avoid out-of-scope attribution", status)
 		return
 	}
 	if status != 200 {
 		log.Error("Could not fetch main page (status %d)", status)
+		return
+	}
+	if isGenericErrorPage(body) {
+		log.Info("Main page is a generic error document — content analysis skipped")
 		return
 	}
 
@@ -381,7 +385,7 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 func scanForSecrets(result *ContentResult, text, source string, log *core.Logger) {
 	for _, sp := range secretPatterns {
-		matches := sp.Pattern.FindAllStringIndex(text, 10) // find indices
+		matches := sp.Pattern.FindAllStringSubmatchIndex(text, 10)
 		for _, loc := range matches {
 			matchStr := text[loc[0]:loc[1]]
 
@@ -401,9 +405,19 @@ func scanForSecrets(result *ContentResult, text, source string, log *core.Logger
 			// "FORGOT_PASSWORD" into "FORGOT_PASS" + "WORD" via
 			// string-literal merging, and the original Hardcoded Password
 			// regex happily matched the "FORGOT_PASS" side. Filter these.
-			if sp.Name == "Hardcoded Password" && isLikelyI18nKey(matchStr) {
-				log.Debug("Dropping i18n key false positive: %s", maskSecret(matchStr))
-				continue
+			if sp.Name == "Hardcoded Password" {
+				passwordValue := matchStr
+				// The hardcoded-password regex's second capture group is the
+				// assigned value. Inspect that value separately: testing the
+				// whole "password:..." match hid class/schema identifiers such
+				// as ReDoc's password:"PasswordFlow".
+				if len(loc) >= 6 && loc[4] >= 0 {
+					passwordValue = text[loc[4]:loc[5]]
+				}
+				if isLikelyI18nKey(matchStr) || isLikelyPasswordDescriptor(passwordValue) {
+					log.Debug("Dropping password identifier false positive: %s", maskSecret(matchStr))
+					continue
+				}
 			}
 			if sp.Name == "Generic API Key" && strings.Contains(strings.ToLower(matchStr), "pk_live_") {
 				log.Debug("Dropping duplicate generic match for Stripe publishable key")
@@ -536,6 +550,38 @@ func isLikelyI18nKey(s string) bool {
 		return true
 	}
 
+	return false
+}
+
+// isLikelyPasswordDescriptor identifies class/schema labels assigned to a
+// property named "password". API documentation renderers commonly contain
+// values such as password:"PasswordFlow"; these describe OAuth schema types,
+// not credentials. Restrict this to punctuation-free CamelCase values with a
+// descriptor suffix so real secret-like values remain reportable.
+func isLikelyPasswordDescriptor(value string) bool {
+	if value == "" || hasDigit(value) {
+		return false
+	}
+	hasLowerUpperTransition := false
+	previousLower := false
+	for _, r := range value {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+			return false
+		}
+		if previousLower && r >= 'A' && r <= 'Z' {
+			hasLowerUpperTransition = true
+		}
+		previousLower = r >= 'a' && r <= 'z'
+	}
+	if !hasLowerUpperTransition {
+		return false
+	}
+	lower := strings.ToLower(value)
+	for _, suffix := range []string{"flow", "schema", "type", "model", "field", "property", "definition", "component"} {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
 	return false
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -85,4 +86,47 @@ func isCloudflareChallenge(body string) bool {
 	return strings.Contains(lower, "just a moment") &&
 		strings.Contains(lower, "cloudflare") &&
 		strings.Contains(lower, "challenge-platform")
+}
+
+var genericErrorTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+
+// isGenericErrorPage detects branded error documents that incorrectly return
+// HTTP 200. Auditing their headers or content as the requested application
+// creates false findings (for example api.bugcrowd.com's root error page).
+// Require both a generic error title segment and an explicit body marker so
+// ordinary documentation that merely discusses 404 handling is not skipped.
+func isGenericErrorPage(body string) bool {
+	titleMatch := genericErrorTitlePattern.FindStringSubmatch(body)
+	if len(titleMatch) < 2 {
+		return false
+	}
+	titleSignal := false
+	for _, part := range strings.FieldsFunc(strings.ToLower(titleMatch[1]), func(r rune) bool {
+		return r == '|' || r == '-' || r == ':'
+	}) {
+		switch strings.TrimSpace(part) {
+		case "error", "404", "404 not found", "not found", "page not found",
+			"forbidden", "access denied", "unauthorized", "bad request", "service unavailable":
+			titleSignal = true
+		}
+	}
+	if !titleSignal {
+		return false
+	}
+
+	lower := strings.ToLower(body)
+	for _, marker := range []string{
+		"requested page was not found",
+		"page was not found",
+		"server returned http status 404",
+		"page does not exist",
+		"access denied",
+		"request could not be processed",
+		"service unavailable",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }

@@ -97,6 +97,7 @@ func TestNewHTTPClient_RequestHeadersOnRedirects(t *testing.T) {
 	defer srv.Close()
 
 	cfg := DefaultConfig()
+	cfg.Target = srv.URL
 	cfg.RequestHeaders = map[string]string{"X-Bug-Bounty": "w1r3hound"}
 	resp, err := NewHTTPClient(cfg).Get(srv.URL + "/start")
 	if err != nil {
@@ -142,5 +143,57 @@ func TestNewHTTPClient_StopsTargetRedirectAtDifferentHost(t *testing.T) {
 	}
 	if sinkHits != 0 {
 		t.Fatalf("cross-host redirect was followed %d time(s)", sinkHits)
+	}
+}
+
+func TestNewHTTPClient_EnforcesConfiguredTargetPath(t *testing.T) {
+	tests := []struct {
+		name       string
+		location   string
+		wantStatus int
+		wantHits   int
+	}{
+		{
+			name:       "outside path",
+			location:   "/engagements",
+			wantStatus: http.StatusFound,
+			wantHits:   0,
+		},
+		{
+			name:       "inside path",
+			location:   "/programs/active",
+			wantStatus: http.StatusNoContent,
+			wantHits:   1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var destinationHits int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/programs" {
+					http.Redirect(w, r, tc.location, http.StatusFound)
+					return
+				}
+				destinationHits++
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer srv.Close()
+
+			cfg := DefaultConfig()
+			cfg.Target = srv.URL + "/programs"
+			resp, err := NewHTTPClient(cfg).Get(cfg.Target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+			if destinationHits != tc.wantHits {
+				t.Fatalf("redirect destination hits = %d, want %d", destinationHits, tc.wantHits)
+			}
+		})
 	}
 }

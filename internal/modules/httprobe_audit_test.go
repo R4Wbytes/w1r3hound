@@ -104,3 +104,45 @@ func TestHTTProbe_PreservesCrossHostRedirect(t *testing.T) {
 		t.Fatalf("redirect metadata lost: %+v", host)
 	}
 }
+
+func TestHTTProbe_ReportsSameHostFinalURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, "/us/", http.StatusMovedPermanently)
+		case "/us/":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = fmt.Fprint(w, "<html><body><h1>403 Forbidden</h1></body></html>")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := core.DefaultConfig()
+	cfg.Target = srv.URL
+	cfg.Concurrency = 1
+	cfg.Timeout = time.Second
+	report := core.NewReport(srv.URL)
+	RunHTTProbe(cfg, report, core.NewLogger(false))
+
+	result := report.Findings[0].Data.(ProbeResult)
+	if len(result.LiveHosts) != 1 {
+		t.Fatalf("live hosts = %v", result.LiveHosts)
+	}
+	host := result.LiveHosts[0]
+	if host.URL != srv.URL+"/us/" || host.StatusCode != http.StatusForbidden {
+		t.Fatalf("final URL/status not correlated: %+v", host)
+	}
+}
+
+func TestDetectTechInline_FindsClientLibraries(t *testing.T) {
+	body := `<script src="/js/vendor/jquery-3.6.0.min.js"></script>` +
+		`<script src="/js/vendor/modernizr-3.6.0.min.js"></script>`
+	got := detectTechInline(http.Header{}, body)
+	for _, want := range []string{"jQuery", "Modernizr"} {
+		if !containsStr(got, want) {
+			t.Errorf("%s not detected; got %v", want, got)
+		}
+	}
+}

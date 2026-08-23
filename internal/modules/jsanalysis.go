@@ -118,7 +118,7 @@ func RunJSAnalysis(cfg *core.Config, report *core.ReconReport, log *core.Logger)
 					continue
 				}
 				ep := tplInterpRe.ReplaceAllString(m[1], "")
-				if isNoiseEndpoint(ep) {
+				if isNoiseEndpoint(ep) || isKnownLibraryEndpointNoise(jsURL, ep) {
 					continue
 				}
 				// Skip third-party absolute URLs (Sentry, Wistia, Marketo, CDNs).
@@ -334,4 +334,42 @@ func isNoiseEndpoint(ep string) bool {
 		return true
 	}
 	return false
+}
+
+// ReDoc's standalone renderer embeds JSON Pointer and OpenAPI schema fragments
+// as quoted slash-prefixed strings. LinkFinder-style regexes cannot distinguish
+// those from routes without source context, so the renderer otherwise contributes
+// dozens of phantom endpoints to the attack-surface summary.
+var redocEndpointNoise = map[string]bool{
+	"/additionalProperties":   true,
+	"/entity/1":               true,
+	"/example":                true,
+	"/headers/":               true,
+	"/items":                  true,
+	"/json/pointer":           true,
+	"/oneOf/":                 true,
+	"/parameters/":            true,
+	"/properties/":            true,
+	"/properties/headers/":    true,
+	"/properties/parameters/": true,
+	"/properties/responses/":  true,
+	"/properties/schemas/":    true,
+	"/regex/":                 true,
+	"/requestBody":            true,
+	"/responses/":             true,
+	"/schema":                 true,
+	"/undefined":              true,
+	"/value":                  true,
+}
+
+func isKnownLibraryEndpointNoise(sourceURL, endpoint string) bool {
+	source := strings.ToLower(sourceURL)
+	if i := strings.IndexByte(source, '?'); i >= 0 {
+		source = source[:i]
+	}
+	base := source
+	if i := strings.LastIndexByte(base, '/'); i >= 0 {
+		base = base[i+1:]
+	}
+	return strings.HasPrefix(base, "redoc") && redocEndpointNoise[endpoint]
 }

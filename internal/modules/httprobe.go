@@ -106,9 +106,13 @@ func RunHTTProbe(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 		resp.Body.Close()
 		body := string(bodyBytes)
+		effectiveURL := url
+		if resp.Request != nil && resp.Request.URL != nil {
+			effectiveURL = resp.Request.URL.String()
+		}
 
 		lh := LiveHost{
-			URL:        url,
+			URL:        effectiveURL,
 			StatusCode: resp.StatusCode,
 			Server:     resp.Header.Get("Server"),
 			Redirect:   resp.Header.Get("Location"),
@@ -122,7 +126,7 @@ func RunHTTProbe(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 		lh.Tech = detectTechInline(resp.Header, body)
 
-		if fh := computeFavicon(client, url, body, cfg); fh != "" {
+		if fh := computeFavicon(client, effectiveURL, body, cfg); fh != "" {
 			lh.FaviconHash = fh
 		}
 
@@ -134,7 +138,7 @@ func RunHTTProbe(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		if summary == "" && lh.Redirect != "" {
 			summary = "→ " + lh.Redirect
 		}
-		log.Info("  [%d] %-45s %s", resp.StatusCode, url, truncate(summary, 80))
+		log.Info("  [%d] %-45s %s", resp.StatusCode, lh.URL, truncate(summary, 80))
 	}
 
 	wg.Add(1)
@@ -166,9 +170,13 @@ func RunHTTProbe(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 				resp.Body.Close()
 				body := string(bodyBytes)
+				effectiveURL := url
+				if resp.Request != nil && resp.Request.URL != nil {
+					effectiveURL = resp.Request.URL.String()
+				}
 
 				lh := LiveHost{
-					URL:        url,
+					URL:        effectiveURL,
 					StatusCode: resp.StatusCode,
 					Server:     resp.Header.Get("Server"),
 					Redirect:   resp.Header.Get("Location"),
@@ -182,7 +190,7 @@ func RunHTTProbe(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 
 				lh.Tech = detectTechInline(resp.Header, body)
 
-				if fh := computeFavicon(client, url, body, cfg); fh != "" {
+				if fh := computeFavicon(client, effectiveURL, body, cfg); fh != "" {
 					lh.FaviconHash = fh
 				}
 
@@ -194,7 +202,7 @@ func RunHTTProbe(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 				if summary == "" && lh.Redirect != "" {
 					summary = "→ " + lh.Redirect
 				}
-				log.Info("  [%d] %-45s %s", resp.StatusCode, url, truncate(summary, 80))
+				log.Info("  [%d] %-45s %s", resp.StatusCode, lh.URL, truncate(summary, 80))
 			}(host, scheme)
 		}
 	}
@@ -437,6 +445,10 @@ func detectTechInline(headers map[string][]string, body string) []string {
 		"__NUXT__":             "Nuxt.js",
 		"csrf-param":           "Ruby on Rails",
 		"laravel_session":      "Laravel",
+		"/jquery-":             "jQuery",
+		"/jquery.min.js":       "jQuery",
+		"/modernizr-":          "Modernizr",
+		"/modernizr.min.js":    "Modernizr",
 	}
 	for marker, name := range markers {
 		if strings.Contains(body, marker) && !containsStr(tech, name) {

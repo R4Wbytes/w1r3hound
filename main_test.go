@@ -34,6 +34,13 @@ func TestHeaderFlags(t *testing.T) {
 	if got := headers["Authorization"]; got != "Bearer value:with:colons" {
 		t.Fatalf("Authorization = %q", got)
 	}
+	if err := headers.Set("X-HackerOne: R4Wbytes"); err != nil {
+		t.Fatal(err)
+	}
+	name, identifier := configuredResearchIdentifier(headers)
+	if name != "X-HackerOne" || identifier != "R4Wbytes" {
+		t.Fatalf("research identifier = %q: %q, want X-HackerOne: R4Wbytes", name, identifier)
+	}
 
 	for _, raw := range []string{
 		"missing-colon",

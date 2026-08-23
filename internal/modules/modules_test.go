@@ -97,6 +97,24 @@ func TestIsNoiseEndpoint(t *testing.T) {
 	}
 }
 
+func TestIsKnownLibraryEndpointNoise(t *testing.T) {
+	cases := []struct {
+		source   string
+		endpoint string
+		noise    bool
+	}{
+		{"https://docs.example/assets/redoc.standalone.js", "/properties/schemas/", true},
+		{"https://docs.example/assets/redoc.standalone.js?v=1", "/schema", true},
+		{"https://docs.example/assets/redoc.standalone.js", "/api/v1/users", false},
+		{"https://app.example/assets/main.js", "/schema", false},
+	}
+	for _, c := range cases {
+		if got := isKnownLibraryEndpointNoise(c.source, c.endpoint); got != c.noise {
+			t.Errorf("isKnownLibraryEndpointNoise(%q, %q) = %v, want %v", c.source, c.endpoint, got, c.noise)
+		}
+	}
+}
+
 // TestAllIPsMatch verifies the wildcard-filter logic used to avoid
 // discarding legitimate subdomains.
 func TestAllIPsMatch(t *testing.T) {

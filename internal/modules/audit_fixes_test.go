@@ -185,3 +185,26 @@ func TestScanForSecrets_DeduplicatesStripePublishableKey(t *testing.T) {
 		t.Fatalf("Stripe publishable key should have one specific match, got %+v", result.SecretsFound)
 	}
 }
+
+func TestScanForSecrets_DropsPasswordSchemaDescriptor(t *testing.T) {
+	var result ContentResult
+	scanForSecrets(
+		&result,
+		`properties:{implicit:"ImplicitFlow",password:"PasswordFlow",clientCredentials:"ClientCredentials"}`,
+		"redoc.js",
+		core.NewLogger(false),
+	)
+	if len(result.SecretsFound) != 0 {
+		t.Fatalf("OAuth schema descriptor was reported as a password: %+v", result.SecretsFound)
+	}
+
+	scanForSecrets(
+		&result,
+		`config={password:"S3cretValue!"}`,
+		"app.js",
+		core.NewLogger(false),
+	)
+	if len(result.SecretsFound) != 1 || result.SecretsFound[0].Type != "Hardcoded Password" {
+		t.Fatalf("secret-like password should remain reportable, got %+v", result.SecretsFound)
+	}
+}

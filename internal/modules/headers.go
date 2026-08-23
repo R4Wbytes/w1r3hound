@@ -103,6 +103,27 @@ func RunHeaders(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		location := resp.Header.Get("Location")
+		if location != "" {
+			log.Info("Target returned redirect %d to %s — header findings skipped", resp.StatusCode, location)
+		} else {
+			log.Info("Target returned redirect %d — header findings skipped", resp.StatusCode)
+		}
+		return
+	}
+	if resp.StatusCode >= 400 {
+		log.Info("Target returned status %d — header findings skipped", resp.StatusCode)
+		return
+	}
+	var responseBody string
+	if isHTMLContentType(resp.Header.Get("Content-Type")) {
+		responseBody = core.ReadBodyLimit(resp, 512*1024)
+		if isGenericErrorPage(responseBody) {
+			log.Info("Target returned a generic error document — header findings skipped")
+			return
+		}
+	}
 
 	// ── 1. Security Headers Check ──
 	isHTTPS := strings.HasPrefix(target, "https://")
@@ -182,16 +203,12 @@ func RunHeaders(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	}
 
 	if len(missing) > 0 {
-		sev := core.SevLow
-		if len(missing) >= 3 {
-			sev = core.SevMedium
-		}
 		report.Add(core.Finding{
 			Module:      "headers",
 			WSTG:        "WSTG-CONF-07",
 			Title:       fmt.Sprintf("%d security headers missing", len(missing)),
-			Severity:    sev,
-			Description: strings.Join(missing, ", "),
+			Severity:    core.SevInfo,
+			Description: "Defense-in-depth headers absent (absence alone is not proof of exploitability): " + strings.Join(missing, ", "),
 			Data:        result.SecurityHeaders,
 		})
 	}
@@ -485,9 +502,8 @@ func RunHeaders(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	// announce themselves only in the markup (Angular's <app-root>, Next.js's
 	// __NEXT_DATA__, …). Read the HTML body once and match a high-signal set so
 	// an SPA target isn't mislabelled as "1 technology".
-	if isHTMLContentType(resp.Header.Get("Content-Type")) {
-		body := core.ReadBodyLimit(resp, 512*1024)
-		for _, td := range detectBodyTech(body) {
+	if responseBody != "" {
+		for _, td := range detectBodyTech(responseBody) {
 			result.Technologies = append(result.Technologies, td)
 			log.Info("Tech detected [body]: %s (%s)", td.Name, td.Value)
 		}
@@ -518,6 +534,7 @@ var bodyTechSignatures = []struct {
 	{"Gatsby", []string{"___gatsby", "/page-data/app-data.json"}},
 	{"SvelteKit", []string{"__sveltekit", "sveltekit:"}},
 	{"jQuery", []string{"/jquery-", "/jquery.min.js"}},
+	{"Modernizr", []string{"/modernizr-", "/modernizr.min.js"}},
 	{"WordPress", []string{"/wp-content/", "/wp-includes/"}},
 	{"Drupal", []string{"Drupal.settings", "/sites/all/"}},
 	{"Bootstrap", []string{"/bootstrap.min.css", "/bootstrap.min.js"}},
@@ -525,6 +542,8 @@ var bodyTechSignatures = []struct {
 
 // ngVersionRe extracts the Angular version from ng-version="X.Y.Z" when present.
 var ngVersionRe = regexp.MustCompile(`ng-version="([^"]+)"`)
+var jqueryVersionRe = regexp.MustCompile(`(?i)/jquery-([0-9]+(?:\.[0-9]+){1,3})(?:\.min)?\.js`)
+var modernizrVersionRe = regexp.MustCompile(`(?i)/modernizr-([0-9]+(?:\.[0-9]+){1,3})(?:\.min)?\.js`)
 
 // detectBodyTech returns the frameworks whose signature appears in the HTML body.
 func detectBodyTech(body string) []TechDetection {
@@ -535,8 +554,17 @@ func detectBodyTech(body string) []TechDetection {
 				continue
 			}
 			value := p
-			if sig.Name == "Angular" {
+			switch sig.Name {
+			case "Angular":
 				if m := ngVersionRe.FindStringSubmatch(body); len(m) > 1 {
+					value = "version " + m[1]
+				}
+			case "jQuery":
+				if m := jqueryVersionRe.FindStringSubmatch(body); len(m) > 1 {
+					value = "version " + m[1]
+				}
+			case "Modernizr":
+				if m := modernizrVersionRe.FindStringSubmatch(body); len(m) > 1 {
 					value = "version " + m[1]
 				}
 			}

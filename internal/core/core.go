@@ -11,7 +11,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -246,6 +248,7 @@ func NewHTTPClient(cfg *Config) *http.Client {
 		}
 		roundTripper = &requestHeaderTransport{base: transport, headers: headers}
 	}
+	targetHost, targetPath := configuredTargetScope(cfg.Target)
 	return &http.Client{
 		Transport: roundTripper,
 		Timeout:   cfg.Timeout,
@@ -255,6 +258,15 @@ func NewHTTPClient(cfg *Config) *http.Client {
 			}
 			if len(via) > 0 {
 				initialHost := via[0].URL.Hostname()
+				if targetHost != "" && strings.EqualFold(initialHost, targetHost) {
+					if !strings.EqualFold(req.URL.Hostname(), targetHost) {
+						return http.ErrUseLastResponse
+					}
+					if targetPath != "" && !pathWithinTarget(req.URL.Path, targetPath) {
+						return http.ErrUseLastResponse
+					}
+					return nil
+				}
 				if isTargetHost(initialHost, cfg.Domain) && !strings.EqualFold(req.URL.Hostname(), initialHost) {
 					return http.ErrUseLastResponse
 				}
@@ -262,6 +274,37 @@ func NewHTTPClient(cfg *Config) *http.Client {
 			return nil
 		},
 	}
+}
+
+// configuredTargetScope returns the exact host and optional path prefix supplied
+// by the operator. A non-root path is an active-scan boundary: following a
+// same-host redirect from /programs to /engagements would otherwise scan and
+// attribute a route that was never authorized or requested.
+func configuredTargetScope(rawTarget string) (string, string) {
+	u, err := url.Parse(rawTarget)
+	if err != nil || u.Hostname() == "" {
+		return "", ""
+	}
+	return strings.ToLower(u.Hostname()), cleanTargetPath(u.Path)
+}
+
+func cleanTargetPath(rawPath string) string {
+	if rawPath == "" || rawPath == "/" {
+		return ""
+	}
+	cleaned := path.Clean("/" + strings.TrimPrefix(rawPath, "/"))
+	if cleaned == "/" || cleaned == "." {
+		return ""
+	}
+	return cleaned
+}
+
+func pathWithinTarget(candidatePath, targetPath string) bool {
+	if targetPath == "" {
+		return true
+	}
+	candidatePath = cleanTargetPath(candidatePath)
+	return candidatePath == targetPath || strings.HasPrefix(candidatePath, targetPath+"/")
 }
 
 func isTargetHost(host, domain string) bool {

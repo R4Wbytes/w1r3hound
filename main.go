@@ -89,6 +89,17 @@ func validHeaderName(name string) bool {
 	return true
 }
 
+func configuredResearchIdentifier(headers map[string]string) (string, string) {
+	for _, preferredName := range []string{"X-HackerOne", "X-Bug-Bounty"} {
+		for name, value := range headers {
+			if strings.EqualFold(name, preferredName) && value != "" {
+				return preferredName, value
+			}
+		}
+	}
+	return "", ""
+}
+
 // safeRun executes a module and contains any panic to that module. Modules
 // process hostile third-party input across many goroutines; without this a
 // single panic in one module would crash the whole process and lose every
@@ -303,8 +314,8 @@ func main() {
 	log.Info("Protocols:   %s", strings.Join(cfg.Modules, ", "))
 	log.Info("Threads:     %d", cfg.Concurrency)
 	log.Info("Mode:        %s", modeLabel(cfg.Passive))
-	if identifier := cfg.RequestHeaders["X-Bug-Bounty"]; identifier != "" {
-		log.Info("Research ID: X-Bug-Bounty: %s", identifier)
+	if name, identifier := configuredResearchIdentifier(cfg.RequestHeaders); identifier != "" {
+		log.Info("Research ID: %s: %s", name, identifier)
 	} else if len(cfg.RequestHeaders) > 0 {
 		log.Info("Custom HTTP headers: %d configured (values hidden)", len(cfg.RequestHeaders))
 	}
