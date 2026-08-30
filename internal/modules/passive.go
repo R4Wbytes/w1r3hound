@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // ══════════════════════════════════════════════
@@ -46,7 +46,7 @@ func RunPassive(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	}
 
 	domain := cfg.Domain
-	client := core.NewHTTPClient(cfg)
+	client := core.NewVerifiedHTTPClient(cfg)
 
 	// Fix #5 (2026-08-11): normalise subdomain targets to the
 	// apex for passive DNS sources. crt.sh, hackertarget, rapiddns, anubis and
@@ -110,7 +110,7 @@ func RunPassive(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	go func() {
 		defer core.RecoverWorker(log, "passivesrc")
 		defer wg.Done()
-		ctClient := core.NewHTTPClient(cfg)
+		ctClient := core.NewVerifiedHTTPClient(cfg)
 		ctClient.Timeout = 30 * time.Second // crt.sh can be slow
 		url := fmt.Sprintf("https://crt.sh/?q=%%25.%s&output=json", domain)
 

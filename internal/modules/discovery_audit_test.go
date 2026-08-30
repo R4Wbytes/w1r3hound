@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // Iteration 7 (WSTG-CONF-02, Juice Shop /metrics): dirbrute discovered /metrics

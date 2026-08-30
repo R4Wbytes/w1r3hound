@@ -2,6 +2,63 @@ package main
 
 import "testing"
 
+// TestMapProtocolResolves covers the -m/-protocols resolution: themed aliases
+// and legacy aliases map to internal names, and internal names pass through.
+func TestMapProtocolResolves(t *testing.T) {
+	cases := map[string]string{
+		// themed aliases
+		"recon": "whois", "traceroute": "asnmap", "passivewatch": "passivesrc",
+		"fingerprinter": "dns", "archaeology": "wayback", "diversify": "permute",
+		"heartbeat": "httprobe", "probescan": "webserver", "metadata": "metafiles",
+		"sentry": "headers", "deepdive": "content", "corstrace": "cors",
+		"cloudsniff": "cloud", "bruteforce": "dirbrute",
+		// legacy aliases still accepted
+		"osint": "whois", "spider": "crawler", "breach": "apiscan", "hijack": "takeover",
+		// internal names pass through unchanged
+		"headers": "headers", "portscan": "portscan", "endprobe": "endprobe",
+		"dns": "dns", "takeover": "takeover",
+	}
+	for in, want := range cases {
+		if got := mapProtocol(in); got != want {
+			t.Errorf("mapProtocol(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestMapProtocolAliasesAreKnownModules guards that every alias resolves to a
+// name main() will actually accept (knownModules[mapped] must be true), so a
+// documented alias can never be rejected as "Unknown protocol".
+func TestMapProtocolAliasesAreKnownModules(t *testing.T) {
+	aliases := []string{
+		"recon", "traceroute", "passivewatch", "fingerprinter", "archaeology",
+		"diversify", "heartbeat", "probescan", "metadata", "sentry", "deepdive",
+		"portscan", "corstrace", "cloudsniff", "bruteforce", "apiscan", "saasenum",
+		"crawler", "jsdeep", "endprobe", "takeover",
+		// legacy
+		"osint", "backtrace", "ghosts", "profile", "timewarp", "spider", "breach", "hijack",
+	}
+	for _, a := range aliases {
+		if mapped := mapProtocol(a); !knownModules[mapped] {
+			t.Errorf("alias %q maps to %q which is not a known module", a, mapped)
+		}
+	}
+}
+
+func TestSanitize(t *testing.T) {
+	cases := map[string]string{
+		"example.com":            "example_com",
+		"https://host:8080/path": "https___host_8080_path",
+		"10.0.0.1":               "10_0_0_1",
+		"a.b/c:d":                "a_b_c_d",
+		"plain":                  "plain",
+	}
+	for in, want := range cases {
+		if got := sanitize(in); got != want {
+			t.Errorf("sanitize(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // N6: extractDomain must not truncate IPv6 literals to "[" or "".
 func TestExtractDomain_IPv6(t *testing.T) {
 	cases := []struct{ in, want string }{

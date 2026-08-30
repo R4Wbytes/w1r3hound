@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // ──────────────────────────────────────────────

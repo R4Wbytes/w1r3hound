@@ -1,0 +1,14 @@
+[
+  {
+    "severity": "INFO",
+    "module": "headers",
+    "wstg_id": "WSTG-CONF-07",
+    "title": "5 security headers missing"
+  },
+  {
+    "severity": "INFO",
+    "module": "headers",
+    "wstg_id": "WSTG-INFO-08",
+    "title": "Technology stack: 0 technologies, 0 cookies detected"
+  }
+]

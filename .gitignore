@@ -3,7 +3,6 @@
 /w1r3hound-linux
 /w1r3hound-mac
 /w1r3hound.exe
-/w1r3hound
 
 # Scan output (JSON + Markdown reports)
 w1r3hound_*.json

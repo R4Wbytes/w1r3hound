@@ -1,0 +1,18 @@
+# Binario del servidor web
+/w1r3hound-webui
+
+# Login panel store — contains password hashes; never commit it
+/auth/
+
+# Informes y logs generados por los escaneos lanzados desde la GUI
+/results/
+
+# Wordlists locales (pueden ser enormes); el servidor crea el dir al arrancar
+/wordlists/
+
+# Dev-only Playwright smoke: node deps, browser binaries and run artifacts are
+# never committed (the shipped build stays zero-dependency).
+/e2e/node_modules/
+/e2e/test-results/
+/e2e/playwright-report/
+/e2e/.playwright/

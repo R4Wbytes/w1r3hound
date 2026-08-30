@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // ══════════════════════════════════════════════
@@ -230,7 +230,7 @@ func isPrintableDNS(s string) bool {
 //  SRV RECORD ENUMERATION
 //  Reveals internal services (SIP, XMPP, LDAP,
 //  Kerberos, etc.) often exposed inadvertently.
-//  (Checklist Fase 1.1: análisis de registros SRV)
+//  (Checklist Phase 1.1: SRV record analysis)
 // ══════════════════════════════════════════════
 
 var srvServices = []string{

@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // Iteration 11 (WSTG-ERRH-02): W1r3Hound had no error-handling coverage, yet

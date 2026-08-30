@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // Iteration 5 (WSTG-INFO-06/07, Juice Shop crawler): the crawler used to run

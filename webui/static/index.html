@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>w1r3hound — Console</title>
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="icon" type="image/png" href="img/w1r3hound.png">
+</head>
+<body>
+
+  <!-- ══════ AUTH GATE (login / first-run setup) ══════ -->
+  <div id="auth-gate" class="auth-gate">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <img class="auth-brand-logo" src="img/w1r3hound.png" alt="w1r3hound logo" width="27" height="40">
+        <span class="auth-brand-text">w1r3hound</span>
+      </div>
+      <div class="auth-tagline">wiretap-grade offensive recon</div>
+
+      <div id="auth-loading" class="auth-panel">
+        <div class="auth-spinner"></div>
+        <div class="auth-loading-text">Connecting to the console…</div>
+      </div>
+
+      <form id="auth-login" class="auth-panel auth-form" hidden autocomplete="on">
+        <h1 class="auth-title">Sign in</h1>
+        <p class="auth-sub">Authenticate to reach the recon console.</p>
+        <div class="form-group">
+          <label for="login-username">Username</label>
+          <input id="login-username" name="username" class="form-input" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+        </div>
+        <div class="form-group">
+          <label for="login-password">Password</label>
+          <input id="login-password" name="password" type="password" class="form-input" autocomplete="current-password" required>
+        </div>
+        <p class="form-error" id="login-error" hidden></p>
+        <button type="submit" class="btn-primary auth-submit" id="login-submit">Sign in</button>
+      </form>
+
+      <form id="auth-setup" class="auth-panel auth-form" hidden autocomplete="on">
+        <h1 class="auth-title">Create administrator</h1>
+        <p class="auth-sub">First run — set up the initial administrator account.</p>
+        <div class="form-group">
+          <label for="setup-username">Username</label>
+          <input id="setup-username" name="username" class="form-input" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+          <div class="field-hint">3–32 chars: letters, numbers, <code>.</code> <code>_</code> <code>-</code></div>
+        </div>
+        <div class="form-group">
+          <label for="setup-password">Password</label>
+          <input id="setup-password" name="new-password" type="password" class="form-input" autocomplete="new-password" required>
+          <div class="field-hint">At least 12 characters — length beats complexity.</div>
+        </div>
+        <div class="form-group">
+          <label for="setup-password2">Confirm password</label>
+          <input id="setup-password2" name="new-password" type="password" class="form-input" autocomplete="new-password" required>
+        </div>
+        <p class="form-error" id="setup-error" hidden></p>
+        <button type="submit" class="btn-primary auth-submit" id="setup-submit">Create &amp; sign in</button>
+      </form>
+
+      <div class="auth-foot">Loopback only · 127.0.0.1:8737 · authorised use only</div>
+    </div>
+  </div>
+
+  <div class="app-layout" hidden>
+
+    <!-- ══════ SIDEBAR ══════ -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <img class="sidebar-logo-img" src="img/w1r3hound.png" alt="w1r3hound logo" width="20" height="30">
+        <span class="sidebar-logo-text">w1r3hound</span>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-label">Workspace</div>
+        <ul class="sidebar-nav">
+          <li><button class="sidebar-nav-item active" data-page="overview"><span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span><span>Overview</span></button></li>
+          <li><button class="sidebar-nav-item" data-page="audits"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg></span><span>Scans</span></button></li>
+          <li><button class="sidebar-nav-item" data-page="findings"><span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4"/><circle cx="12" cy="16" r="0.5" fill="currentColor"/></svg></span><span>Findings</span></button></li>
+          <li><button class="sidebar-nav-item" data-page="console"><span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 8l4 4-4 4"/><line x1="13" y1="16" x2="17" y2="16"/></svg></span><span>Console</span></button></li>
+        </ul>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-label">Account</div>
+        <ul class="sidebar-nav">
+          <li><button class="sidebar-nav-item" data-page="account"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span><span>Account</span></button></li>
+          <li><button class="sidebar-nav-item" data-page="settings"><span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></span><span>Settings</span></button></li>
+        </ul>
+      </div>
+
+      <div class="sidebar-spacer"></div>
+
+      <div class="sidebar-cta">
+        <button class="btn-primary js-new-scan">+ New scan</button>
+      </div>
+
+      <button class="sidebar-collapse">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="11,17 6,12 11,7"/><polyline points="18,17 13,12 18,7"/></svg>
+        <span class="collapse-label">Collapse</span>
+      </button>
+
+      <div class="sidebar-status-box">
+        <div class="status-box-label">Server</div>
+        <div class="status-box-row"><span class="status-led" id="server-status-led"></span><span id="server-status-text">127.0.0.1:8737 · local only</span></div>
+      </div>
+
+      <div class="sidebar-user">
+        <div class="sidebar-user-avatar" id="sb-user-avatar">w1</div>
+        <div class="sidebar-user-info">
+          <div class="sidebar-user-email" id="sb-user-name">wiretap-grade recon</div>
+          <div class="sidebar-user-plan" id="sb-user-role">loopback GUI</div>
+        </div>
+        <button class="sidebar-logout" id="sb-logout" title="Sign out" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ══════ MAIN ══════ -->
+    <main class="main-content">
+
+      <!-- ═══ OVERVIEW ═══ -->
+      <div id="page-overview" class="page-view active">
+        <div class="page-header">
+          <div>
+            <h1>Overview</h1>
+            <div class="page-subtitle" id="overview-date"></div>
+          </div>
+          <div class="page-header-actions">
+            <div class="search-input">
+              <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input type="text" id="search-overview" placeholder="Search findings…">
+            </div>
+            <button class="btn-primary js-new-scan">+ New scan</button>
+          </div>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Total Scans<span class="stat-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg></span></div>
+            <div class="stat-value-row"><span class="stat-value" id="stat-scans">0</span></div>
+            <div class="stat-extra">all time</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Findings<span class="stat-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg></span></div>
+            <div class="stat-value-row"><span class="stat-value" id="stat-findings">0</span></div>
+            <div class="stat-extra"><span class="critical-count" id="stat-critical">0 critical</span> across reports</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Targets<span class="stat-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="12" x2="15" y2="15"/></svg></span></div>
+            <div class="stat-value-row"><span class="stat-value" id="stat-targets">0</span></div>
+            <div class="stat-extra">unique</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Running now<span class="stat-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span></div>
+            <div class="stat-value-row"><span class="stat-value" id="stat-running">0</span></div>
+            <div class="stat-extra">active or queued</div>
+          </div>
+        </div>
+
+        <div class="overview-grid">
+          <div class="card">
+            <div class="card-title">Findings by severity</div>
+            <div class="card-subtitle">aggregated across all reports</div>
+            <div class="severity-list">
+              <div class="severity-row">
+                <span class="severity-dot critical"></span>
+                <div class="severity-info"><div class="severity-name">Critical</div><div class="severity-range">CVSS 9.0+</div></div>
+                <div class="severity-spacer"></div>
+                <div class="severity-chart" id="chart-critical"></div>
+                <span class="severity-count" id="count-critical">0</span>
+              </div>
+              <div class="severity-row">
+                <span class="severity-dot high"></span>
+                <div class="severity-info"><div class="severity-name">High</div><div class="severity-range">7.0 – 8.9</div></div>
+                <div class="severity-spacer"></div>
+                <div class="severity-chart" id="chart-high"></div>
+                <span class="severity-count" id="count-high">0</span>
+              </div>
+              <div class="severity-row">
+                <span class="severity-dot medium"></span>
+                <div class="severity-info"><div class="severity-name">Medium</div><div class="severity-range">4.0 – 6.9</div></div>
+                <div class="severity-spacer"></div>
+                <div class="severity-chart" id="chart-medium"></div>
+                <span class="severity-count" id="count-medium">0</span>
+              </div>
+              <div class="severity-row">
+                <span class="severity-dot low"></span>
+                <div class="severity-info"><div class="severity-name">Low</div><div class="severity-range">0.1 – 3.9</div></div>
+                <div class="severity-spacer"></div>
+                <div class="severity-chart" id="chart-low"></div>
+                <span class="severity-count" id="count-low">0</span>
+              </div>
+              <div class="severity-row">
+                <span class="severity-dot info"></span>
+                <div class="severity-info"><div class="severity-name">Info</div><div class="severity-range">Advisory</div></div>
+                <div class="severity-spacer"></div>
+                <div class="severity-chart" id="chart-info"></div>
+                <span class="severity-count" id="count-info">0</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card audit-status-card">
+            <div class="card-title">Scan status</div>
+            <div class="donut-container">
+              <svg id="donut-svg" width="110" height="110" viewBox="0 0 110 110">
+                <circle cx="55" cy="55" r="42" fill="none" stroke="#1e1e22" stroke-width="7"/>
+                <text x="55" y="52" text-anchor="middle" fill="#fafafa" font-size="20" font-weight="600">0%</text>
+                <text x="55" y="66" text-anchor="middle" fill="#52525b" font-size="9" font-weight="600" letter-spacing="0.1em">SUCCESS</text>
+              </svg>
+            </div>
+            <div class="audit-legend">
+              <div class="audit-legend-item"><div class="legend-left"><span class="legend-dot" style="background:var(--accent-green)"></span><span class="legend-label">Completed</span></div><span class="legend-count" id="legend-done">0</span></div>
+              <div class="audit-legend-item"><div class="legend-left"><span class="legend-dot" style="background:var(--accent-cyan)"></span><span class="legend-label">Running</span></div><span class="legend-count" id="legend-running">0</span></div>
+              <div class="audit-legend-item"><div class="legend-left"><span class="legend-dot" style="background:var(--accent-red)"></span><span class="legend-label">Failed</span></div><span class="legend-count" id="legend-failed">0</span></div>
+            </div>
+            <div class="audit-metrics">
+              <div class="audit-metric"><div class="metric-value" id="metric-total">0</div><div class="metric-label">Scans</div></div>
+              <div class="audit-metric"><div class="metric-value" id="metric-per-scan">0.0</div><div class="metric-label">Findings/scan</div></div>
+              <div class="audit-metric"><div class="metric-value" id="metric-success">—</div><div class="metric-label">Success</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="recent-audits-header"><div class="card-title">Recent scans</div><a class="view-all-link" data-nav="audits">View all →</a></div>
+          <div id="recent-scans-body"></div>
+        </div>
+      </div>
+
+      <!-- ═══ SCANS ═══ -->
+      <div id="page-audits" class="page-view">
+        <div class="page-header">
+          <div><h1>Scans</h1><div class="page-subtitle">Every scan launched from this console</div></div>
+          <div class="page-header-actions">
+            <div class="search-input">
+              <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input type="text" id="search-audits" placeholder="Search by target…">
+            </div>
+            <button class="btn-primary js-new-scan">+ New scan</button>
+          </div>
+        </div>
+        <div class="audits-toolbar">
+          <span class="audits-count"><strong id="scans-count">0</strong> scans</span>
+          <select class="filter-select" id="filter-scan-status">
+            <option value="all">Status: All</option>
+            <option value="running">Running</option>
+            <option value="queued">Queued</option>
+            <option value="done">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+          <button class="btn-mini" id="btn-refresh-scans"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Refresh</button>
+          <span class="sort-label" id="toggle-scan-sort">Sort: Newest first ▾</span>
+        </div>
+        <div id="scans-body"></div>
+      </div>
+
+      <!-- ═══ FINDINGS ═══ -->
+      <div id="page-findings" class="page-view">
+        <div class="page-header">
+          <div><h1>Findings</h1><div class="page-subtitle">Vulnerabilities parsed from scan reports</div></div>
+          <div class="page-header-actions">
+            <select class="filter-select" id="finding-scan-select"><option value="">No completed scans</option></select>
+            <button class="btn-export" id="btn-export-findings">
+              <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Export CSV
+            </button>
+          </div>
+        </div>
+        <div class="findings-status-bar">
+          <div class="findings-status-item"><span class="status-value" id="fstat-total">0</span><span class="status-label">Total</span></div>
+          <div class="findings-status-item"><span class="status-value" id="fstat-critical">0</span><span class="status-dot" style="background:var(--accent-red)"></span><span class="status-label">Critical</span></div>
+          <div class="findings-status-item"><span class="status-value" id="fstat-high">0</span><span class="status-dot" style="background:var(--accent-orange)"></span><span class="status-label">High</span></div>
+          <div class="findings-status-item"><span class="status-value" id="fstat-medium">0</span><span class="status-dot" style="background:var(--accent-yellow)"></span><span class="status-label">Medium</span></div>
+          <div class="findings-status-item"><span class="status-value" id="fstat-low">0</span><span class="status-dot" style="background:var(--accent-blue)"></span><span class="status-label">Low</span></div>
+          <div class="findings-status-item"><span class="status-value" id="fstat-info">0</span><span class="status-dot" style="background:var(--accent-gray)"></span><span class="status-label">Info</span></div>
+        </div>
+        <div class="findings-filters">
+          <select class="filter-select" id="filter-severity">
+            <option value="all">Severity: Any</option>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+            <option value="info">Info</option>
+          </select>
+          <select class="filter-select" id="filter-status">
+            <option value="all">Triage: All</option>
+            <option value="open">Open</option>
+            <option value="in-progress">In progress</option>
+            <option value="fixed">Fixed</option>
+            <option value="accepted">Accepted</option>
+            <option value="false-positive">False positive</option>
+          </select>
+          <div class="search-input" style="min-width:180px">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="search-findings" placeholder="Search title, module…">
+          </div>
+          <select class="filter-select" id="filter-fsort" style="margin-left:auto">
+            <option value="severity">Highest severity</option>
+            <option value="module">By module</option>
+            <option value="title">By title</option>
+          </select>
+        </div>
+        <div class="findings-table">
+          <div class="findings-table-header">
+            <span>Finding</span><span>Severity</span><span>Triage</span><span>Module</span>
+          </div>
+          <div class="findings-table-body" id="findings-tbody"></div>
+        </div>
+      </div>
+
+      <!-- ═══ CONSOLE ═══ -->
+      <div id="page-console" class="page-view">
+        <div class="console-empty" id="console-empty">
+          <div class="empty-icon">
+            <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 8l4 4-4 4"/><line x1="13" y1="16" x2="17" y2="16"/></svg>
+          </div>
+          <h3 style="font-size:16px;font-weight:600;color:var(--text-primary);margin-bottom:8px">No scans yet</h3>
+          <p>Launch a scan and its live console — engine output streamed over SSE, plus the resulting report — will open here.</p>
+          <button class="btn-primary js-new-scan">+ New scan</button>
+        </div>
+
+        <div id="console-active" hidden>
+          <div class="console-header-bar">
+            <div class="console-info">
+              <h2 id="console-target"></h2>
+              <span class="console-type" id="console-mods"></span>
+              <span id="console-status"></span>
+            </div>
+            <div class="console-progress-wrap">
+              <div class="console-progress-track">
+                <div class="console-progress-bar" id="console-progress-bar"></div>
+              </div>
+              <span class="console-progress-label" id="console-progress-label">idle</span>
+            </div>
+            <div class="console-actions">
+              <button class="btn-mini danger" id="btn-console-cancel" hidden>■ Cancel</button>
+            </div>
+          </div>
+          <div class="console-tabs" id="console-tabs"></div>
+          <div class="console-toolbar">
+            <label class="mini-check"><input type="checkbox" id="log-autoscroll" checked> auto-scroll</label>
+            <button class="btn-mini" id="btn-clear-log">clear</button>
+            <span class="spacer"></span>
+            <a class="btn-mini" id="dl-log" href="#" hidden>⬇ log</a>
+            <a class="btn-mini" id="dl-json" href="#" hidden>⬇ .json</a>
+            <a class="btn-mini" id="dl-md" href="#" hidden>⬇ .md</a>
+          </div>
+          <div class="console-terminal" id="console-terminal"></div>
+        </div>
+      </div>
+
+      <!-- ═══ ACCOUNT ═══ -->
+      <div id="page-account" class="page-view">
+        <div class="page-header"><div><h1>Account</h1><div class="page-subtitle">Profile, password &amp; — for admins — user management</div></div></div>
+        <div id="account-body" style="max-width:720px"></div>
+      </div>
+
+      <!-- ═══ SETTINGS ═══ -->
+      <div id="page-settings" class="page-view">
+        <div class="page-header"><div><h1>Settings</h1><div class="page-subtitle">Console configuration</div></div></div>
+        <div id="settings-body" style="max-width:640px"></div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- MODAL -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal-box" id="modal-box"></div>
+  </div>
+
+  <!-- DETAIL PANEL -->
+  <div class="detail-panel" id="detail-panel">
+    <div class="detail-panel-header">
+      <span class="detail-eyebrow">Finding detail</span>
+      <button class="detail-panel-close">&times;</button>
+    </div>
+    <div class="detail-panel-body" id="detail-panel-body"></div>
+  </div>
+  <div class="detail-panel-overlay" id="detail-panel-overlay"></div>
+
+  <!-- TOAST -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

@@ -5,6 +5,30 @@ follows [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) where
 applicable.
 
+## [2.0.0] — 2026-08-30
+
+Major release: localhost-only Web GUI dashboard.
+
+### Added
+- Web GUI: dark card-based SPA at `127.0.0.1:8737` with sidebar navigation
+- Login panel with PBKDF2-HMAC-SHA256 (600k iterations), session management, RBAC, account lockout
+- Scan queue with 2-worker pool and Server-Sent Events live output streaming
+- Full CLI-GUI parity: all CLI flags exposed through the web interface
+- Six dashboard pages: Overview, Scans, Findings, Console, Account, Settings
+- Severity donut chart, findings table with CSV export, real-time console terminal
+- Playwright end-to-end smoke tests for the web console
+- GitHub Actions CI pipeline (vet, gofmt, test-race, CSP, golden, fuzz, smoke)
+- Makefile with 16 targets (build, test, lint, security, CI)
+- Build-time version injection via `-ldflags`
+- CONTRIBUTING.md, SECURITY.md, and GUI screenshots in README
+
+### Security
+- Origin/Referer guard on all mutating endpoints (DNS rebinding defense)
+- Strict Content Security Policy with nonce enforcement
+- CSRF token validation on state-changing requests
+- COOP/CORP/COEP headers
+- Module catalog validation for GUI scan requests
+
 ## [1.0.6] — 2026-08-11
 
 Eight false-positive fixes validated against three Anthropic HackerOne

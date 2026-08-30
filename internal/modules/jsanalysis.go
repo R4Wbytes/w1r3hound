@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // ══════════════════════════════════════════════
@@ -17,7 +17,7 @@ import (
 //  Extracts API endpoints, routes, and paths from
 //  JS bundles. Consistently one of the highest-
 //  value recon activities.
-//  (Checklist Fase 3.5: análisis profundo de JS)
+//  (Checklist Phase 3.5: deep JS analysis)
 // ══════════════════════════════════════════════
 
 type JSAnalysisResult struct {

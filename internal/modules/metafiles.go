@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // ──────────────────────────────────────────────
@@ -89,9 +89,18 @@ func RunMetafiles(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 		target + "/sitemap.xml.gz",
 		target + "/sitemaps.xml",
 	}
-	// Also from robots.txt
+	// Also from robots.txt — but only sitemap URLs that stay on the target's own
+	// host. A hostile robots.txt can point "Sitemap:" at any host, and this
+	// initial fetch is NOT covered by the redirect scope guard, so an unfiltered
+	// value is a straight SSRF (C-1). Off-scope entries are dropped.
 	if result.RobotsTxt != nil {
-		sitemapURLs = append(sitemapURLs, result.RobotsTxt.SitemapURLs...)
+		for _, s := range result.RobotsTxt.SitemapURLs {
+			if isSameDomainURL(s, cfg.Domain) {
+				sitemapURLs = append(sitemapURLs, s)
+			} else {
+				log.Debug("Skipping off-scope Sitemap URL from robots.txt: %s", s)
+			}
+		}
 	}
 	seenSitemaps := make(map[string]bool)
 	uniqueSitemaps := sitemapURLs[:0]

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // ══════════════════════════════════════════════
@@ -39,7 +39,7 @@ func RunWayback(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		return
 	}
 
-	client := core.NewHTTPClient(cfg)
+	client := core.NewVerifiedHTTPClient(cfg)
 	domain := cfg.Domain
 
 	var allRows [][]string

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // Iteration 10 (WSTG-INFO-08): the sentry/headers tech detection was header- and

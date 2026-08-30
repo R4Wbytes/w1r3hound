@@ -11,7 +11,7 @@
 
    [ wiretap-grade offensive recon ]
    ─────────────────────────────────────
-   w1r3hound v1.0.6 · OWASP WSTG · BBP · CTF
+   w1r3hound v2.0.0 · OWASP WSTG · BBP · CTF
 ```
 
 > *"Privacy is a lie. Security is an illusion. The only thing that's real is the data.
@@ -30,7 +30,7 @@ everything.
 ## Installation
 
 ```bash
-git clone https://github.com/w1r3hound/w1r3hound.git
+git clone https://github.com/R4Wbytes/w1r3hound.git
 cd w1r3hound
 go build -o w1r3hound .
 ```
@@ -79,6 +79,12 @@ w1r3hound -t target.com -w /path/to/subdomains.txt -o bb_report
   -resolver          Custom DNS resolver, e.g. 1.1.1.1 or 8.8.8.8:53 (default: system)
   -resolvers         Path to a resolver list — opts subdomain brute-force/permutation into the
                      raw-UDP DNS engine (rotates across resolvers, -rate governs DNS too)
+  -H, -header        Custom HTTP header in 'Name: value' format (repeatable)
+  -skip-tls-verify   Skip TLS certificate verification (default: true)
+  -block-private-egress  Refuse dials to loopback/private/link-local IPs — opt-in SSRF guard (default: false)
+  -wayback-limit     Max URLs to pull from the Wayback CDX API (default: 5000)
+  -crawl-pages       Max pages for the crawler (default: 100)
+  -js-files          Max JavaScript files to analyse (default: 50)
   -v, -verbose       Debug output
   -passive           Passive mode (no traffic to target)
   -rate              Max requests/sec (0 = unlimited)
@@ -88,7 +94,8 @@ w1r3hound -t target.com -w /path/to/subdomains.txt -o bb_report
 
 ## Scan Protocols
 
-The framework ships with **20 modules** grouped in 5 categories.
+The framework ships with **21 modules** grouped in 5 categories (the 21st,
+`endprobe`, is an unauthenticated-access probe over JS-discovered endpoints).
 The themed aliases use a wiretap/surveillance vocabulary — both
 themed names and the plain internal names are accepted on the
 command line.
@@ -128,7 +135,7 @@ command line.
 | `cloudsniff` | cloud | S3/Azure/GCS/Firebase/DigitalOcean buckets | CONF-11 |
 | `bruteforce` | dirbrute | Hidden paths, admin panels, backups, configs | CONF-03/04/05 |
 | `apiscan` | apiscan | GraphQL introspection, Swagger/OpenAPI, REST, WS | INFO-06 |
-| `saasenum` | saasenum | SaaS enum (Zendesk/JIRA/Okta/Salesforce +19) | INFO-10 |
+| `saasenum` | saasenum | SaaS enum (Zendesk/JIRA/Okta/Salesforce +15 more, 19 total) | INFO-10 |
 | `crawler` | crawler | Web crawl for forms, params, entry points | INFO-06/07 |
 
 ### Deep Analysis
@@ -175,6 +182,122 @@ command line.
 | LOW | Version leak, internal IPs, informational exposure |
 | INFO | Scan data, tech stack, crawl results |
 
+## Web GUI
+
+A localhost-only **dashboard console** lives in `webui/` (Go standard library
+only — still zero third-party dependencies, no external CDNs or fonts). It
+drives the compiled CLI as a subprocess, streams scan output live over
+Server-Sent Events, queues scans through a 2-worker pool, and renders the
+JSON/Markdown reports in the browser. The frontend is a single-page app with a
+dark, card-based dashboard design.
+
+![Login](docs/screenshots/login.png)
+
+![Dashboard](docs/screenshots/dashboard.png)
+
+![Scans](docs/screenshots/scans.png)
+
+```bash
+# one command: builds the CLI if needed, builds the GUI, serves it and
+# opens the browser at http://127.0.0.1:8737
+./webui/run.sh
+```
+
+Manual equivalent:
+
+```bash
+go build -o w1r3hound .
+go build -o webui/w1r3hound-webui ./webui
+./webui/w1r3hound-webui        # listens on 127.0.0.1:8737 only
+```
+
+### Pages
+
+- **Overview** — aggregate stats (scans, findings, targets, running now), a
+  findings-by-severity breakdown, a scan-status donut, and recent scans, all
+  derived from the live scan list.
+- **Scans** — real scan history with status, findings count, timing, and
+  per-scan actions (open console, view findings, cancel).
+- **Findings** — vulnerabilities parsed from each scan's `report.json`, shown
+  in a severity-styled table with a slide-in detail panel (module, WSTG ID,
+  description, raw data). Filter by severity/triage/text, tag a local triage
+  status per finding, and export the report to CSV.
+- **Console** — the scan launcher and live terminal. The **New scan** modal
+  exposes the CLI options the backend validates (`-t`, `-m` with all 21
+  modules grouped by category and all/none/passive presets, `-c`, `-p`, `-w`,
+  `-rate`, `-timeout`, `-ua`, `-o`, `-passive`, `-v`) plus an **Advanced
+  options** section at full CLI parity (`-dir-wordlist`, `-dir-ext`, `-H`
+  custom headers, `-skip-tls-verify`, `-block-private-egress`, `-resolver`,
+  `-resolvers`, `-wayback-limit`, `-crawl-pages`, `-js-files`), with passive
+  mode on by default and a mandatory authorization checkbox. Engine output
+  streams line by line over SSE with severity coloring; running scans are
+  cancellable and each scan gets a tab.
+- **Account** — the signed-in user's profile, a change-password form, sign-out,
+  and (for administrators) user management: create/delete users, reset
+  passwords, and unlock locked-out accounts.
+- **Settings** — legacy open-mode auth token, the authorized-use notice,
+  report-storage info, and a control to clear local triage state.
+
+Reports and captured logs are written under `webui/results/`; custom subdomain
+wordlists must be placed in `webui/wordlists/` (paths outside it are rejected).
+
+### Login panel
+
+The GUI ships with an optional account-based login panel (standard library
+only — no new dependencies). It is **off by default** so the zero-config
+loopback workflow keeps working; the first account you create turns it on for
+everyone.
+
+- **First-run setup.** With no accounts, the login screen offers a one-time
+  "create administrator" form (or use the **Account → Set up login** button).
+  No default credentials ship with the tool.
+- **Roles.** `admin` accounts manage users; `user` accounts run scans and
+  manage their own password. Admin-provisioned passwords must be changed on
+  first sign-in — enforced **server-side**: such an account can only reach the
+  password-change endpoints until it rotates. The last administrator cannot be
+  deleted.
+- **Passwords.** Stored only as salted **PBKDF2-HMAC-SHA256** hashes
+  (600k iterations, per-user 128-bit salt) in `webui/auth/users.json`
+  (`0600`, in a `0700` dir). Policy favours length: ≥ 12 characters, a small
+  common-password deny-list, and the username is rejected as a password.
+- **Sessions.** 256-bit CSPRNG tokens in an `HttpOnly`, `SameSite=Strict`
+  cookie; only the SHA-256 of each token is kept server-side. Idle (30 min) and
+  absolute (12 h) timeouts apply. Changing a password revokes every other
+  session.
+- **Brute-force resistance.** Constant-time verification (with a dummy hash on
+  unknown usernames to prevent enumeration), plus per-account lockout after 10
+  failed attempts for 15 minutes. A process-wide pre-auth throttle (concurrency
+  semaphore + token bucket) caps the PBKDF2 CPU an unauthenticated caller can
+  spend on `login`/`setup`, shedding floods with `429`.
+- **CSRF.** The existing origin/`Sec-Fetch-Site` guard is backed by a
+  per-session `X-CSRF-Token` synchroniser on every state-changing request.
+
+```bash
+# Force the gate before any admin exists (refuse the API until setup):
+W1R3HOUND_AUTH=required ./webui/run.sh
+
+# Headless/automated bootstrap of the first admin (env is never persisted):
+W1R3HOUND_ADMIN_USER=admin W1R3HOUND_ADMIN_PASS='a-long-unique-passphrase' ./webui/run.sh
+```
+
+Once accounts exist, session auth protects **every** API route (including the
+read/report endpoints) and the legacy `W1R3HOUND_UI_TOKEN` is no longer used.
+
+Hardening: the server binds to `127.0.0.1` only, rejects cross-origin and
+DNS-rebinding requests, ships a strict Content-Security-Policy (self-hosted
+assets, no inline scripts) alongside cross-origin isolation headers
+(COOP/CORP/COEP) and a restrictive `Permissions-Policy`, validates every field
+against allow-lists (modules, port ranges, numeric bounds, hostname/IP/CIDR/URL
+targets), never invokes a shell, and supports the account-based **login panel**
+above. Without accounts it can still require a legacy shared token on the
+scan/cancel endpoints:
+
+```bash
+W1R3HOUND_UI_TOKEN=secret ./webui/run.sh   # then enter the token in Settings
+```
+
+The same rules as the CLI apply: authorized targets only.
+
 ## Quick Playbook
 
 ### Bug Bounty
@@ -204,7 +327,7 @@ w1r3hound -t http://challenge.ctf:31337 -m probescan,deepdive,bruteforce,crawler
 ```
 w1r3hound/
 ├── main.go                          # CLI, protocol router, banner
-├── go.mod                           # module github.com/w1r3hound/w1r3hound
+├── go.mod                           # module github.com/R4Wbytes/w1r3hound
 ├── internal/
 │   ├── core/
 │   │   └── core.go                  # Config, HTTP client, rate limiter, logger
@@ -231,7 +354,22 @@ w1r3hound/
 │   │   └── helpers.go               # Shared utils
 │   └── report/
 │       └── report.go                # JSON + Markdown report gen
-├── CHANGELOG.md
+├── webui/                           # localhost-only dashboard console
+│   ├── main.go                      # HTTP server, routes, CSP/origin guard
+│   ├── auth.go                      # login panel: users, sessions, lockout, RBAC
+│   ├── password.go                  # PBKDF2-HMAC-SHA256 hashing + policy
+│   ├── jobs.go                      # scan queue, worker pool, SSE broadcast
+│   ├── validate.go                  # module catalog + request validation
+│   ├── run.sh                       # build CLI + GUI and serve on :8737
+│   ├── auth/                        # user store (users.json, 0600) — runtime
+│   ├── results/                     # generated reports & logs (runtime)
+│   ├── wordlists/                   # user-supplied wordlists (runtime)
+│   └── static/                      # single-page dashboard UI
+│       ├── index.html               # sidebar SPA shell
+│       ├── css/styles.css           # dashboard design system
+│       └── js/
+│           ├── api.js               # backend client + helpers
+│           └── app.js               # SPA controller (all pages)
 ├── LICENSE
 └── README.md
 ```

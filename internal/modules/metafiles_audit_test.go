@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // Iteration 6 (WSTG-CONF-04, Juice Shop /ftp): robots.txt Disallow entries are

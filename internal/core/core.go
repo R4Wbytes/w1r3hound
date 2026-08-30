@@ -16,6 +16,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -24,24 +25,30 @@ import (
 // ──────────────────────────────────────────────
 
 type Config struct {
-	Target         string
-	Domain         string        // extracted root domain
-	Concurrency    int           // max goroutines per module
-	Timeout        time.Duration // per-request timeout
-	UserAgent      string
-	OutputFile     string // path for JSON report
-	Verbose        bool
-	Modules        []string // which modules to run ("all" = everything)
-	Wordlist       string   // path to a wordlist for subdomain bruteforce
-	DirWordlist    string   // path to a wordlist for directory/file bruteforce (falls back to the embedded list when empty)
-	DirExtensions  string   // comma-separated extensions appended to each dirbrute word (e.g. ".bak,.php,.zip,~")
-	Resolvers      []string // ip[:port] pool for the raw-UDP DNS brute-force engine; empty = use Resolver (stdlib) as today
-	Ports          string   // port spec for scanner (e.g. "top100", "1-1024", "full")
-	RateLimit      int      // requests per second (0 = unlimited)
-	SkipSSLCheck   bool
-	Passive        bool              // passive-only mode (no active probing)
-	RL             *RateLimiter      // rate limiter shared across modules
-	RequestHeaders map[string]string // headers added to every HTTP request
+	Target        string
+	Domain        string        // extracted root domain
+	Concurrency   int           // max goroutines per module
+	Timeout       time.Duration // per-request timeout
+	UserAgent     string
+	OutputFile    string // path for JSON report
+	Verbose       bool
+	Modules       []string // which modules to run ("all" = everything)
+	Wordlist      string   // path to a wordlist for subdomain bruteforce
+	DirWordlist   string   // path to a wordlist for directory/file bruteforce (falls back to the embedded list when empty)
+	DirExtensions string   // comma-separated extensions appended to each dirbrute word (e.g. ".bak,.php,.zip,~")
+	Resolvers     []string // ip[:port] pool for the raw-UDP DNS brute-force engine; empty = use Resolver (stdlib) as today
+	Ports         string   // port spec for scanner (e.g. "top100", "1-1024", "full")
+	RateLimit     int      // requests per second (0 = unlimited)
+	SkipSSLCheck  bool
+	// BlockPrivateEgress (opt-in, -block-private-egress) makes the shared dialer
+	// refuse connections whose RESOLVED IP is loopback/private/link-local/
+	// unspecified — a dial-time SSRF guard that catches an in-scope hostname, or
+	// a target-supplied URL, pointing at an internal/metadata address. Off by
+	// default so intended internal/CTF scans keep working.
+	BlockPrivateEgress bool
+	Passive            bool              // passive-only mode (no active probing)
+	RL                 *RateLimiter      // rate limiter shared across modules
+	RequestHeaders     map[string]string // headers added to every HTTP request
 
 	// Cancel is the root context cancellation function. Modules that perform
 	// raw net.Dial/tls.Dial (outside the shared HTTP client) should derive a
@@ -65,7 +72,7 @@ type Config struct {
 
 	// ── Shared context (data feedback between modules) ──
 	// Modules populate these so downstream modules can consume them.
-	// (Checklist Fase 8.1: realimentación de datos entre fases)
+	// (Checklist Phase 8.1: data feedback between phases)
 	SharedMu         sync.Mutex
 	SharedSubdomains []string // discovered subdomains (passive + active)
 	SharedURLs       []string // discovered URLs (wayback, crawler)
@@ -224,9 +231,31 @@ func ReadLines(path string) []string {
 //  Shared HTTP Client
 // ──────────────────────────────────────────────
 
+// NewHTTPClient returns the shared client for traffic to the scan target. It
+// honours cfg.SkipSSLCheck (default true) so recon can still fingerprint
+// broken/self-signed TLS on the target itself.
 func NewHTTPClient(cfg *Config) *http.Client {
+	return newHTTPClient(cfg, cfg.SkipSSLCheck)
+}
+
+// NewVerifiedHTTPClient returns a client that ALWAYS verifies the server
+// certificate and requires TLS 1.2+, regardless of cfg.SkipSSLCheck. Use it for
+// calls to trusted, fixed third-party intel APIs (crt.sh, HackerTarget,
+// AlienVault, RapidDNS, jldc/Anubis, CertSpotter, BGPView, RDAP, the Wayback
+// Machine): their responses steer active scanning and populate the report, so a
+// MITM must not be able to tamper with them even when the operator disabled TLS
+// verification for the target.
+func NewVerifiedHTTPClient(cfg *Config) *http.Client {
+	return newHTTPClient(cfg, false)
+}
+
+func newHTTPClient(cfg *Config, insecureSkipVerify bool) *http.Client {
+	tlsConf := &tls.Config{InsecureSkipVerify: insecureSkipVerify}
+	if !insecureSkipVerify {
+		tlsConf.MinVersion = tls.VersionTLS12
+	}
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: cfg.SkipSSLCheck},
+		TLSClientConfig: tlsConf,
 		// A hand-built Transport doesn't inherit http.DefaultTransport's h2
 		// auto-negotiation, so without this Go silently stays on HTTP/1.1 even
 		// against servers that support HTTP/2.
@@ -234,6 +263,7 @@ func NewHTTPClient(cfg *Config) *http.Client {
 		DialContext: (&net.Dialer{
 			Timeout:   cfg.Timeout,
 			KeepAlive: 30 * time.Second,
+			Control:   egressControl(cfg),
 		}).DialContext,
 		MaxIdleConns:        cfg.Concurrency,
 		MaxIdleConnsPerHost: cfg.Concurrency,
@@ -273,6 +303,31 @@ func NewHTTPClient(cfg *Config) *http.Client {
 			}
 			return nil
 		},
+	}
+}
+
+// egressControl returns a net.Dialer Control hook that blocks dials to
+// non-public IPs when cfg.BlockPrivateEgress is set (opt-in). The hook runs
+// AFTER DNS resolution with the concrete IP:port, so it catches an in-scope
+// hostname (the target controls its own DNS) or a target-supplied URL that
+// resolves to loopback/RFC1918/link-local/metadata — a dial-time SSRF guard.
+// Returns nil (a no-op hook) when the guard is off, preserving the default
+// behaviour for intended internal/CTF targets.
+func egressControl(cfg *Config) func(network, address string, c syscall.RawConn) error {
+	if cfg == nil || !cfg.BlockPrivateEgress {
+		return nil
+	}
+	return func(_, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			host = address
+		}
+		ip := net.ParseIP(host)
+		if ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+			ip.IsLinkLocalMulticast() || ip.IsUnspecified()) {
+			return fmt.Errorf("egress to non-public address %s blocked (-block-private-egress)", host)
+		}
+		return nil
 	}
 }
 
@@ -580,8 +635,19 @@ func stripControl(s string) string {
 // slice is freshly allocated at each call site, so mutating it in place is safe.
 func scrubArgs(args []any) []any {
 	for i, a := range args {
-		if s, ok := a.(string); ok {
-			args[i] = stripControl(s)
+		switch v := a.(type) {
+		case string:
+			args[i] = stripControl(v)
+		case []string:
+			// C-4: a []string logged with %v (e.g. discovered subdomains, port
+			// banners, allowed HTTP methods) was previously passed through raw,
+			// so a hostile entry could inject terminal-control sequences. Scrub
+			// each element into a fresh slice (never mutate the caller's).
+			cleaned := make([]string, len(v))
+			for j, s := range v {
+				cleaned[j] = stripControl(s)
+			}
+			args[i] = cleaned
 		}
 	}
 	return args

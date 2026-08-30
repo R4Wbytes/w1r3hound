@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // ══════════════════════════════════════════════
@@ -562,9 +562,13 @@ func fetchSwaggerUISpec(client *http.Client, pageURL, pageBody string, cfg *core
 	// Strategy 1: look for swagger-ui-init.js script tag
 	if m := swaggerInitJSRe.FindStringSubmatch(pageBody); len(m) > 1 {
 		initURL := resolveURL(dirURL, m[1])
-		initBody, status, err := core.FetchBodyRL(client, initURL, cfg.UserAgent, cfg.RL)
-		if err == nil && status == 200 && len(initBody) > 100 && looksLikeSwaggerSpec(initBody) {
-			return initBody
+		// C-1: the script src is attacker-controlled; only fetch it if it stays
+		// on the target's own host (an absolute off-host URL would be SSRF).
+		if isSameDomainURL(initURL, cfg.Domain) {
+			initBody, status, err := core.FetchBodyRL(client, initURL, cfg.UserAgent, cfg.RL)
+			if err == nil && status == 200 && len(initBody) > 100 && looksLikeSwaggerSpec(initBody) {
+				return initBody
+			}
 		}
 	}
 
@@ -583,9 +587,12 @@ func fetchSwaggerUISpec(client *http.Client, pageURL, pageBody string, cfg *core
 	// Strategy 3: extract spec URL from the page body (SwaggerUIBundle config)
 	if m := swaggerSpecURLRe.FindStringSubmatch(pageBody); len(m) > 1 {
 		specURL := resolveURL(dirURL, m[1])
-		specBody, status, err := core.FetchBodyRL(client, specURL, cfg.UserAgent, cfg.RL)
-		if err == nil && status == 200 && strings.Contains(specBody, "\"paths\"") {
-			return specBody
+		// C-1: the spec URL is attacker-controlled; confine it to the target host.
+		if isSameDomainURL(specURL, cfg.Domain) {
+			specBody, status, err := core.FetchBodyRL(client, specURL, cfg.UserAgent, cfg.RL)
+			if err == nil && status == 200 && strings.Contains(specBody, "\"paths\"") {
+				return specBody
+			}
 		}
 	}
 

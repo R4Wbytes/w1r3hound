@@ -21,10 +21,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
-	"github.com/w1r3hound/w1r3hound/internal/modules"
-	"github.com/w1r3hound/w1r3hound/internal/report"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/modules"
+	"github.com/R4Wbytes/w1r3hound/internal/report"
 )
+
+var version = "2.0.0"
 
 // knownModules is the set of internal module names mapProtocol can resolve
 // to (i.e. every RunXxx registered in main), plus "all". mapProtocol passes
@@ -113,7 +115,7 @@ func safeRun(log *core.Logger, name string, fn func()) {
 	fn()
 }
 
-const banner = `
+var bannerTpl = `
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⡟⣷⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣠⣶⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⡿⠀⢻⡆⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⠟⠉⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -153,7 +155,7 @@ const banner = `
 ╚███╔███╔╝ ██║██║  ██║██████╔╝██║  ██║╚██████╔╝╚██████╔╝██║ ╚████║██████╔╝
  ╚══╝╚══╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝╚═════╝
 
-   [ wiretap-grade offensive recon ]   w1r3hound v1.0.6 · OWASP WSTG · BBP · CTF
+   [ wiretap-grade offensive recon ]   w1r3hound %s · OWASP WSTG · BBP · CTF
 `
 
 const helpFooter = `
@@ -224,17 +226,18 @@ func main() {
 	flag.Var(customHeaders, "header", "Custom HTTP header in 'Name: value' format (repeatable)")
 	flag.Var(customHeaders, "H", "Custom HTTP header (shorthand, repeatable)")
 	flag.BoolVar(&cfg.SkipSSLCheck, "skip-tls-verify", true, "Skip TLS certificate verification (recon often targets broken/self-signed TLS)")
+	flag.BoolVar(&cfg.BlockPrivateEgress, "block-private-egress", false, "Refuse connections to loopback/private/link-local IPs (opt-in SSRF guard; leave off for internal/CTF targets)")
 	resolverAddr := flag.String("resolver", "", "Custom DNS resolver, e.g. 1.1.1.1 or 8.8.8.8:53 (default: system)")
 	resolversFile := flag.String("resolvers", "", "Path to a resolver list (one ip[:port] per line) — opts subdomain brute-force/permutation into the raw-UDP engine, rotating across the list instead of the single system/-resolver resolver; -rate then governs DNS too")
 	flag.IntVar(&cfg.WaybackLimit, "wayback-limit", cfg.WaybackLimit, "Max URLs to pull from the Wayback CDX API")
 	flag.IntVar(&cfg.CrawlMaxPages, "crawl-pages", cfg.CrawlMaxPages, "Max pages for the crawler")
 	flag.IntVar(&cfg.MaxJSFiles, "js-files", cfg.MaxJSFiles, "Max JavaScript files to analyse")
 
-	moduleList := flag.String("protocols", "all", "Comma-separated protocols: recon,traceroute,passivewatch,fingerprinter,archaeology,diversify,heartbeat,probescan,metadata,sentry,deepdive,portscan,corstrace,cloudsniff,bruteforce,apiscan,saasenum,crawler,jsdeep,takeover")
+	moduleList := flag.String("protocols", "all", "Comma-separated protocols: recon,traceroute,passivewatch,fingerprinter,archaeology,diversify,heartbeat,probescan,metadata,sentry,deepdive,portscan,corstrace,cloudsniff,bruteforce,apiscan,saasenum,crawler,jsdeep,endprobe,takeover")
 	flag.StringVar(moduleList, "m", "all", "Protocols (shorthand)")
 
 	flag.Usage = func() {
-		fmt.Fprint(os.Stderr, banner)
+		fmt.Fprintf(os.Stderr, bannerTpl, version)
 		fmt.Fprintf(os.Stderr, "\nUsage: w1r3hound -t <target> [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
@@ -308,7 +311,7 @@ func main() {
 
 	// ── Initialize ──
 	log := core.NewLogger(cfg.Verbose)
-	fmt.Fprint(os.Stderr, banner)
+	fmt.Fprintf(os.Stderr, bannerTpl, version)
 	log.Info("Target:      %s", cfg.Target)
 	log.Info("Domain:      %s", cfg.Domain)
 	log.Info("Protocols:   %s", strings.Join(cfg.Modules, ", "))

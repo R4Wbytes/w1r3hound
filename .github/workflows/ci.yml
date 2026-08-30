@@ -1,0 +1,95 @@
+name: CI
+
+# Dormant until this tree is pushed to a Git remote; mirrors the Makefile so
+# the same checks run locally (`make ci`) and in CI. No third-party runtime
+# dependencies are introduced.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: gofmt (must be clean)
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "gofmt required on:"; echo "$out"; exit 1; fi
+
+      - name: Test (race)
+        run: go test -race ./...
+
+      - name: CSP hygiene
+        run: go test -run TestStaticAssetsAreCSPClean ./webui/
+
+      - name: FP/FN golden + fuzz seed corpus
+        run: |
+          go test ./internal/modules/ -run TestGoldenFindings
+          go test -run=Fuzz ./internal/core/ ./internal/modules/
+
+      - name: Build binaries
+        run: |
+          go build -ldflags="-X main.version=${GITHUB_REF_NAME:-ci}" -o w1r3hound .
+          go build -o webui/w1r3hound-webui ./webui
+
+      - name: Smoke (loopback portscan)
+        run: make smoke
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    # Informational: tracks Go stdlib advisories (see docs/SECURITY_ASSESSMENT.md).
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+  juiceshop:
+    runs-on: ubuntu-latest
+    # End-to-end against a real Juice Shop container (TEST_PLAN.md §4.2). Kept
+    # off the default gate: it depends on Docker networking in the runner.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - name: Juice Shop end-to-end
+        run: make e2e-juiceshop
+
+  gosec:
+    runs-on: ubuntu-latest
+    # Informational: triage against the audit's accepted G-items.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - name: gosec
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          "$(go env GOPATH)/bin/gosec" -quiet ./...

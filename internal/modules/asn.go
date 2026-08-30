@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // ══════════════════════════════════════════════
@@ -43,7 +43,7 @@ type ASNInfo struct {
 func RunASN(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	log.Module("ASNMAP // ASN & CIDR Range Discovery")
 
-	client := core.NewHTTPClient(cfg)
+	client := core.NewVerifiedHTTPClient(cfg)
 	domain := cfg.Domain
 
 	// 1. Resolve the target to an IP

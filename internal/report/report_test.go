@@ -1,10 +1,11 @@
 package report
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // N2: a server-controlled finding title (Server header, cert CN, cookie name,
@@ -49,5 +50,29 @@ func TestMdInline(t *testing.T) {
 	// Plain text is preserved (modulo escaping of metacharacters).
 	if got := mdInline("Apache 2.4"); got != "Apache 2.4" {
 		t.Errorf("plain text altered: %q", got)
+	}
+}
+
+// BenchmarkGenerateMarkdown measures the human-report builder over a large
+// findings set (OPTIMIZATIONS.md §7). It exercises the per-finding inline
+// escaping and severity grouping — the string-heavy hot path of report gen.
+func BenchmarkGenerateMarkdown(b *testing.B) {
+	r := core.NewReport("bench.example.com")
+	sevs := []core.Severity{core.SevInfo, core.SevLow, core.SevMedium, core.SevHigh, core.SevCritical}
+	for i := 0; i < 1000; i++ {
+		r.Add(core.Finding{
+			Module:      "headers",
+			WSTG:        "WSTG-CONF-07",
+			Title:       fmt.Sprintf("Finding %d on host-%d", i, i),
+			Severity:    sevs[i%len(sevs)],
+			Description: "A representative description with enough length to exercise the markdown inline escaper and the severity-grouped builder.",
+			Data:        map[string]any{"index": i, "url": fmt.Sprintf("https://host-%d.example.com/path", i)},
+		})
+	}
+	r.Finalize()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = generateMarkdown(r)
 	}
 }

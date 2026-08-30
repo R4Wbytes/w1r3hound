@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // ══════════════════════════════════════════════
@@ -14,7 +14,7 @@ import (
 //  Goes beyond NXDOMAIN: most vulnerable services
 //  (S3, GitHub Pages, Heroku) resolve fine but
 //  return a characteristic error page.
-//  (Checklist Fase 1.3: verificación por firma HTTP)
+//  (Checklist Phase 1.3: verification by HTTP signature)
 // ══════════════════════════════════════════════
 
 type TakeoverResult struct {

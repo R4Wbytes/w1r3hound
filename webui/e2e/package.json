@@ -1,0 +1,13 @@
+{
+  "name": "w1r3hound-webui-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Dev-only Playwright headless smoke for the w1r3hound web console. NOT part of the shipped build — the webui itself remains zero-dependency (Go stdlib + vanilla JS). Deps here are for local/CI QA only and are gitignored.",
+  "scripts": {
+    "postinstall-browser": "playwright install chromium",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0"
+  }
+}

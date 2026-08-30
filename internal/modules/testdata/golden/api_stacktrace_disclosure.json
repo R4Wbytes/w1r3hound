@@ -1,0 +1,14 @@
+[
+  {
+    "severity": "INFO",
+    "module": "apiscan",
+    "wstg_id": "WSTG-INFO-06",
+    "title": "API scan: 0 GraphQL, 0 docs, 0 REST versions"
+  },
+  {
+    "severity": "MEDIUM",
+    "module": "apiscan",
+    "wstg_id": "WSTG-ERRH-02",
+    "title": "Stack trace / verbose error disclosure (2 endpoint(s))"
+  }
+]

@@ -3,7 +3,7 @@ package modules
 import (
 	"testing"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // N15: a WAF/CDN edge that returns a uniform 403 block page for every path must

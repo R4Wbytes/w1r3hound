@@ -1,0 +1,20 @@
+[
+  {
+    "severity": "HIGH",
+    "module": "metafiles",
+    "wstg_id": "WSTG-CONF-04",
+    "title": "Directory listing enabled at /ftp"
+  },
+  {
+    "severity": "INFO",
+    "module": "metafiles",
+    "wstg_id": "WSTG-INFO-03",
+    "title": "Metafiles analysis complete"
+  },
+  {
+    "severity": "INFO",
+    "module": "metafiles",
+    "wstg_id": "WSTG-INFO-03",
+    "title": "robots.txt lists 1 disallowed paths"
+  }
+]

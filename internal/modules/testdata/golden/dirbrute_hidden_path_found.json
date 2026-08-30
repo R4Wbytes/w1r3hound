@@ -1,0 +1,14 @@
+[
+  {
+    "severity": "INFO",
+    "module": "dirbrute",
+    "wstg_id": "WSTG-CONF-03",
+    "title": "Directory discovery: 1 paths found"
+  },
+  {
+    "severity": "MEDIUM",
+    "module": "dirbrute",
+    "wstg_id": "WSTG-CONF-05",
+    "title": "Sensitive paths accessible: 1"
+  }
+]

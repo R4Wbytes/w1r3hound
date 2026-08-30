@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/w1r3hound/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 func TestSurfaceSummaryUsesGenericEndpointLabel(t *testing.T) {
