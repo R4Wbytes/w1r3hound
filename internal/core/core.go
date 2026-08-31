@@ -216,6 +216,7 @@ func ReadLines(path string) []string {
 	if path == "" {
 		return nil
 	}
+	// #nosec G304 -- path is an operator-supplied wordlist/resolver-list file passed on the CLI; opening the file the operator explicitly points at is the intended behaviour of the tool they run.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
@@ -255,6 +256,7 @@ func NewVerifiedHTTPClient(cfg *Config) *http.Client {
 }
 
 func newHTTPClient(cfg *Config, insecureSkipVerify bool) *http.Client {
+	// #nosec G402 -- InsecureSkipVerify is parameterised by the caller: target traffic honours the operator's -skip-tls-verify flag, while NewVerifiedHTTPClient passes false to force verification (TLS 1.2+) for trusted third-party intel APIs.
 	tlsConf := &tls.Config{InsecureSkipVerify: insecureSkipVerify}
 	if !insecureSkipVerify {
 		tlsConf.MinVersion = tls.VersionTLS12

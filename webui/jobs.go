@@ -248,6 +248,7 @@ func (m *Manager) Submit(owner, target string, args []string, base string) (*Job
 	if len(m.queue) >= queueCapacity {
 		return nil, fmt.Errorf("queue full, try again when a scan finishes")
 	}
+	// #nosec G304 -- base is validated by outputNameRe in buildArgs (alphanumerics/._- only, no ".."), then joined under resultsDir; the path cannot escape the results directory.
 	logFile, err := os.OpenFile(filepath.Join(m.resultsDir, base+".log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("could not create the log file: %w", err)
@@ -333,6 +334,7 @@ func (m *Manager) ownerOf(id string) (owner string, known bool) {
 		return meta.Owner, true
 	}
 	for _, ext := range []string{".json", ".md", ".log"} {
+		// #nosec G703 -- id is gated by validScanID at the top of ownerOf (single path component, no ".."), so the joined path stays inside resultsDir.
 		if _, err := os.Stat(filepath.Join(m.resultsDir, id+ext)); err == nil {
 			return "", true // legacy report without an ownership sidecar
 		}
@@ -414,6 +416,7 @@ func (m *Manager) run(job *Job) {
 	job.StartedAt = time.Now()
 	job.mu.Unlock()
 
+	// #nosec G204 -- m.binPath is the fixed w1r3hound binary; job.Args is built solely by buildArgs from allow-listed flags and validated values, and exec.CommandContext runs no shell.
 	cmd := exec.CommandContext(ctx, m.binPath, job.Args...)
 	cmd.Dir = m.repoRoot
 	// On cancel, ask politely first: the CLI writes a partial report on
@@ -487,6 +490,7 @@ func exitCodeOf(err error) int {
 
 // countSeverities parses a report JSON file and returns per-severity counts.
 func countSeverities(jsonPath string) (map[string]int, int, error) {
+	// #nosec G304 -- jsonPath is <resultsDir>/<base>.json where base is the validated scan id (outputNameRe, no ".."); it never contains untrusted path segments.
 	f, err := os.Open(jsonPath)
 	if err != nil {
 		return nil, 0, err
@@ -568,6 +572,7 @@ type reportHeader struct {
 }
 
 func parseReportHeader(jsonPath string) (*reportHeader, error) {
+	// #nosec G304 -- jsonPath comes from filepath.Glob over resultsDir (server-enumerated report files), never from user input.
 	f, err := os.Open(jsonPath)
 	if err != nil {
 		return nil, err

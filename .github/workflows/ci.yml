@@ -16,9 +16,9 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.26.x'
           check-latest: true
@@ -55,8 +55,8 @@ jobs:
     # Informational: tracks Go stdlib advisories (see docs/SECURITY_ASSESSMENT.md).
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.26.x'
           check-latest: true
@@ -71,8 +71,8 @@ jobs:
     # off the default gate: it depends on Docker networking in the runner.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.26.x'
           check-latest: true
@@ -84,8 +84,8 @@ jobs:
     # Informational: triage against the audit's accepted G-items.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.26.x'
           check-latest: true

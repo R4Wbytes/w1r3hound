@@ -513,6 +513,7 @@ func (s *server) confinedResultFile(id, ext string) (string, error) {
 	if resolved != base && !strings.HasPrefix(resolved, base+string(os.PathSeparator)) {
 		return "", fmt.Errorf("outside the results directory")
 	}
+	// #nosec G703 -- resolved is confined to resultsDir just above: id is a single path component (no ".."), symlink-evaluated and prefix-checked against the results dir before this stat.
 	fi, err := os.Stat(resolved)
 	if err != nil || !fi.Mode().IsRegular() {
 		return "", fmt.Errorf("not found")

@@ -279,6 +279,7 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 			if dialErr != nil {
 				err = dialErr
 			} else {
+				// #nosec G402 -- InsecureSkipVerify is the operator-set cfg.SkipSSLCheck flag; W1r3hound intentionally fingerprints broken/self-signed TLS on the scan target, opt-in by the operator via -skip-tls-verify.
 				tlsConn := tls.Client(rawConn, &tls.Config{InsecureSkipVerify: cfg.SkipSSLCheck})
 				err = tlsConn.HandshakeContext(ctx)
 				if err == nil {
@@ -372,6 +373,7 @@ func inspectTLS(hostAddr string, timeout time.Duration, skipVerify bool, cfg *co
 		// BUGFIX: previously hardcoded true. Now honours the caller's
 		// skipVerify flag (sourced from cfg.SkipSSLCheck). Lets users
 		// enforce strict validation when needed.
+		// #nosec G402 -- skipVerify is the operator-set cfg.SkipSSLCheck flag; inspecting a target's broken/self-signed cert is the point of this module, opt-in by the operator.
 		&tls.Config{InsecureSkipVerify: skipVerify},
 	)
 	if err != nil {
