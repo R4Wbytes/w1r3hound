@@ -593,11 +593,11 @@ func detectScheme(target string, cfg *core.Config) string {
 		return http.ErrUseLastResponse
 	}
 	if resp, err := client.Head("https://" + target); err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return "https://" + target
 	}
 	if resp, err := client.Head("http://" + target); err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		fmt.Fprintf(os.Stderr, "\033[33m  ⚠ No scheme given — HTTPS failed, using HTTP\033[0m\n")
 		return "http://" + target
 	}

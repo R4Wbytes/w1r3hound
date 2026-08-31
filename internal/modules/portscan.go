@@ -196,7 +196,7 @@ func scanOneIP(cfg *core.Config, log *core.Logger, host, ip string, ports []int,
 				Service: serviceNames[p],
 			}
 			pi.Banner = probeBanner(conn, pi.Service, host, bannerWindow, cfg)
-			conn.Close()
+			_ = conn.Close()
 
 			if refined := refineServiceFromBanner(pi.Banner, pi.Service); refined != "" {
 				pi.Service = refined
@@ -248,18 +248,18 @@ func dialWithRetry(cfg *core.Config, addr string, dialTimeout time.Duration) (ne
 func probeBanner(conn net.Conn, service, hostHeader string, bannerWindow time.Duration, cfg *core.Config) string {
 	buf := make([]byte, 1024)
 
-	conn.SetReadDeadline(time.Now().Add(bannerWindow))
+	_ = conn.SetReadDeadline(time.Now().Add(bannerWindow))
 	n, _ := conn.Read(buf)
 
 	if n == 0 {
 		if strings.Contains(service, "http") {
-			conn.SetWriteDeadline(time.Now().Add(bannerWindow))
+			_ = conn.SetWriteDeadline(time.Now().Add(bannerWindow))
 			writeRawHTTPRequest(conn, "HEAD / HTTP/1.0", hostHeader, cfg)
 		} else {
-			conn.SetWriteDeadline(time.Now().Add(bannerWindow))
-			conn.Write([]byte("\r\n"))
+			_ = conn.SetWriteDeadline(time.Now().Add(bannerWindow))
+			_, _ = conn.Write([]byte("\r\n"))
 		}
-		conn.SetReadDeadline(time.Now().Add(bannerWindow))
+		_ = conn.SetReadDeadline(time.Now().Add(bannerWindow))
 		n, _ = conn.Read(buf)
 	}
 	if n == 0 {

@@ -283,7 +283,7 @@ func RunCORS(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		if err != nil {
 			continue
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		acao := resp.Header.Get("Access-Control-Allow-Origin")
 		acac := resp.Header.Get("Access-Control-Allow-Credentials")
@@ -926,7 +926,7 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			})
 			return
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		log.Warn("Soft-404 calibration requests failed while the target root is reachable — continuing with post-scan cluster analysis")
 		baseline404 = soft404Baseline{status: 404}
 	}
@@ -963,7 +963,7 @@ func RunDirBrute(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			// which can flip the soft-404 comparison and produce a false
 			// positive on flaky connections.
 			bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if readErr != nil {
 				return
 			}
@@ -1161,7 +1161,7 @@ func detectSoft404Baseline(client *http.Client, target, ua string, rl *core.Rate
 			continue
 		}
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		// Strip the path name from the body before hashing —
 		// this way pages that embed the requested path still match.

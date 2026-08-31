@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -104,7 +106,7 @@ func RunHTTProbe(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			return
 		}
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		body := string(bodyBytes)
 		effectiveURL := url
 		if resp.Request != nil && resp.Request.URL != nil {
@@ -168,7 +170,7 @@ func RunHTTProbe(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 					return
 				}
 				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				body := string(bodyBytes)
 				effectiveURL := url
 				if resp.Request != nil && resp.Request.URL != nil {
@@ -291,7 +293,13 @@ func computeFavicon(client *http.Client, pageURL, pageBody string, cfg *core.Con
 	// Shodan format: base64-encode with newlines every 76 chars, then mmh3
 	encoded := base64EncodeMime(data)
 	h := murmur3Hash32(encoded)
-	return fmt.Sprintf("%d", int32(h))
+	var signed int64
+	if h <= math.MaxInt32 {
+		signed = int64(h)
+	} else {
+		signed = int64(h) - (1 << 32)
+	}
+	return strconv.FormatInt(signed, 10)
 }
 
 func discoverFaviconURL(pageURL, body string) string {
@@ -408,6 +416,9 @@ func murmur3Hash32(data []byte) uint32 {
 		h1 ^= k1
 	}
 
+	if length < 0 || length > math.MaxUint32 {
+		length = 0
+	}
 	h1 ^= uint32(length)
 	h1 ^= h1 >> 16
 	h1 *= 0x85ebca6b

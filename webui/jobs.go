@@ -113,7 +113,7 @@ func (j *Job) finish(status JobStatus, exitCode int, errMsg string) {
 	j.ErrMsg = errMsg
 	j.EndedAt = time.Now()
 	if j.logFile != nil {
-		j.logFile.Close()
+		_ = j.logFile.Close()
 		j.logFile = nil
 	}
 	j.closed = true
@@ -216,7 +216,9 @@ func NewManager(repoRoot, binPath, resultsDir, wordlistsDir string) (*Manager, e
 		}
 		// Tighten perms even if the directory pre-existed with a looser mode,
 		// so other local users cannot enumerate scan names / target domains.
-		_ = os.Chmod(dir, 0o700)
+		if fi, err := os.Stat(dir); err == nil {
+			_ = os.Chmod(dir, fi.Mode().Perm()&^0o077)
+		}
 	}
 	m := &Manager{
 		repoRoot:     repoRoot,

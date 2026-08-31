@@ -118,7 +118,7 @@ func bootstrapAdminFromEnv(auth *AuthManager) {
 		log.Printf("admin bootstrap from environment failed: %v", err)
 		return
 	}
-	log.Printf("bootstrapped administrator %q from environment", normalizeUsername(user))
+	log.Print("bootstrapped administrator account from environment variables")
 }
 
 // handler builds the full HTTP handler: the route mux wrapped in the origin
@@ -289,7 +289,7 @@ func (s *server) canAccessScan(r *http.Request, owner string) bool {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

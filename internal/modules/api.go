@@ -153,12 +153,12 @@ func RunAPI(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		resp, err := core.DoRequestRL(client, "GET", url, cfg.UserAgent, cfg.RL)
 		if err != nil || resp.StatusCode != 200 {
 			if resp != nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 			continue
 		}
 		bodyBytes := core.ReadBodyLimit(resp, 10*1024*1024)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		body := bodyBytes
 		status := 200
 

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"strings"
 	"time"
@@ -42,15 +43,19 @@ func realZoneTransfer(domain, ns string, timeout time.Duration, cfg *core.Config
 		return nil
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(timeout * 3))
+	_ = conn.SetDeadline(time.Now().Add(timeout * 3))
 
 	// Build an AXFR query (type 252). Goes straight to the zone's authoritative
 	// nameserver, not a recursive resolver, so RD stays unset (recursive=false).
 	query := buildDNSQuery(domain, 252, false)
 
 	// TCP DNS: 2-byte length prefix
+	queryLen := len(query)
+	if queryLen < 0 || queryLen > math.MaxUint16 {
+		return nil
+	}
 	lenBuf := make([]byte, 2)
-	binary.BigEndian.PutUint16(lenBuf, uint16(len(query)))
+	binary.BigEndian.PutUint16(lenBuf, uint16(queryLen))
 	if _, err := conn.Write(append(lenBuf, query...)); err != nil {
 		return nil
 	}
@@ -128,7 +133,11 @@ func buildDNSQuery(domain string, qtype uint16, recursive bool) []byte {
 		if len(label) > 63 {
 			label = label[:63]
 		}
-		buf = append(buf, byte(len(label)))
+		n := len(label)
+		if n > math.MaxUint8 {
+			n = math.MaxUint8
+		}
+		buf = append(buf, byte(n))
 		buf = append(buf, []byte(label)...)
 	}
 	buf = append(buf, 0x00) // root

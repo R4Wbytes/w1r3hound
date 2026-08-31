@@ -119,7 +119,7 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 				Description: fmt.Sprintf("Custom response header %s may reveal internal information.", hh[0]),
 			})
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	} else {
 		log.Warn("Could not fetch headers (%v) — continuing with TLS inspection & method probing", err)
 	}
@@ -140,7 +140,7 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 		var baselineLen int64
 		if baseResp, baseErr := core.DoRequestRL(client, "GET", probeURL, cfg.UserAgent, cfg.RL); baseErr == nil {
 			baseBody, _ := io.ReadAll(io.LimitReader(baseResp.Body, 256*1024))
-			baseResp.Body.Close()
+			_ = baseResp.Body.Close()
 			baselineHash = sha256.Sum256(baseBody)
 			baselineLen = int64(len(baseBody))
 		}
@@ -156,7 +156,7 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 				continue
 			}
 			body, _ := io.ReadAll(io.LimitReader(r.Body, 256*1024))
-			r.Body.Close()
+			_ = r.Body.Close()
 			result.ErrorBehavior[m] = r.StatusCode
 			h := sha256.Sum256(body)
 			methodBodyHash[m] = h
@@ -218,7 +218,7 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 				if allowHdr == "" {
 					allowHdr = optResp.Header.Get("Access-Control-Allow-Methods")
 				}
-				optResp.Body.Close()
+				_ = optResp.Body.Close()
 				if allowHdr != "" {
 					declared := parseMethodList(allowHdr)
 					if len(declared) > len(result.HTTPMethods) {
@@ -284,7 +284,7 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 				if err == nil {
 					conn = tlsConn
 				} else {
-					rawConn.Close()
+					_ = rawConn.Close()
 				}
 			}
 		} else {
@@ -292,10 +292,10 @@ func RunWebServer(cfg *core.Config, report *core.ReconReport, log *core.Logger) 
 		}
 		if err == nil {
 			writeRawHTTPRequest(conn, "GET / SANTA CLAUS/1.1", cfg.Domain, cfg)
-			conn.SetReadDeadline(time.Now().Add(cfg.Timeout))
+			_ = conn.SetReadDeadline(time.Now().Add(cfg.Timeout))
 			buf := make([]byte, 4096)
 			n, _ := conn.Read(buf)
-			conn.Close()
+			_ = conn.Close()
 			if n > 0 {
 				errResp := string(buf[:n])
 				log.Debug("Error response fingerprint: %s", truncate(errResp, 200))

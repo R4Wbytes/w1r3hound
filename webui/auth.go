@@ -151,7 +151,9 @@ func NewAuthManager(dir string, forced bool) (*AuthManager, error) {
 		return nil, err
 	}
 	// Tighten perms even if the directory pre-existed with a looser mode.
-	_ = os.Chmod(dir, 0o700)
+	if fi, err := os.Stat(dir); err == nil {
+		_ = os.Chmod(dir, fi.Mode().Perm()&^0o077)
+	}
 	a := &AuthManager{
 		dir:       dir,
 		usersPath: filepath.Join(dir, usersFileName),
@@ -212,15 +214,15 @@ func (a *AuthManager) saveLocked() error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -707,7 +709,7 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request, raw string) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   r.TLS != nil,
+		Secure:   true,
 	})
 }
 
@@ -718,7 +720,7 @@ func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   r.TLS != nil,
+		Secure:   true,
 		MaxAge:   -1,
 	})
 }

@@ -144,8 +144,7 @@ func (c *Config) AddSharedParams(params []string) {
 }
 
 func DefaultConfig() *Config {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &Config{
+	cfg := &Config{
 		Concurrency:   20,
 		Timeout:       10 * time.Second,
 		UserAgent:     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -159,9 +158,15 @@ func DefaultConfig() *Config {
 		WaybackLimit:  5000,
 		CrawlMaxPages: 100,
 		MaxJSFiles:    50,
-		cancelCtx:     ctx,
-		Cancel:        cancel,
 	}
+	initCancelContext(cfg)
+	return cfg
+}
+
+func initCancelContext(cfg *Config) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cfg.cancelCtx = ctx
+	cfg.Cancel = func() { cancel(nil) }
 }
 
 // Context returns a child context derived from the root cancel context, with
