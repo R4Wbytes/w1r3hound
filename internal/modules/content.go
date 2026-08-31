@@ -254,6 +254,12 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 			if smStatus == 200 && looksLikeSourceMap(smBody) {
 				result.SourceMaps = append(result.SourceMaps, smURL)
 				log.Warn("Source map accessible: %s", smURL)
+				// A source map embeds the original, un-minified source
+				// (sourcesContent), which frequently still contains hardcoded
+				// secrets that were stripped from the served bundle. Scan the map
+				// body with the same secret patterns (FN-5.3). No extra request:
+				// the map was already fetched above.
+				scanForSecrets(&result, smBody, smURL, log)
 			} else {
 				log.Debug("Source map referenced but not accessible (status %d): %s", smStatus, smURL)
 			}
@@ -289,6 +295,8 @@ func RunContent(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		if smStatus == 200 && looksLikeSourceMap(smBody) {
 			result.SourceMaps = append(result.SourceMaps, smURL)
 			log.Warn("Source map accessible: %s", smURL)
+			// Scan the original source embedded in the map for secrets (FN-5.3).
+			scanForSecrets(&result, smBody, smURL, log)
 		}
 	}
 
@@ -423,6 +431,20 @@ func scanForSecrets(result *ContentResult, text, source string, log *core.Logger
 				log.Debug("Dropping duplicate generic match for Stripe publishable key")
 				continue
 			}
+			// Drop obvious placeholder/example keys from config templates, sample
+			// .env files and docs (api_key = "your-api-key-here", API_KEY=REPLACE_ME).
+			// The captured value is the regex's 2nd group; fall back to the whole
+			// match if the group is absent.
+			if sp.Name == "Generic API Key" {
+				keyValue := matchStr
+				if len(loc) >= 6 && loc[4] >= 0 {
+					keyValue = text[loc[4]:loc[5]]
+				}
+				if isLikelyPlaceholderSecret(keyValue) {
+					log.Debug("Dropping placeholder/example API key: %s", maskSecret(matchStr))
+					continue
+				}
+			}
 
 			// Extract a short context window
 			ctxStart := loc[0] - 30
@@ -493,6 +515,45 @@ func isSafeMatch(s string) bool {
 		strings.Contains(lower, "text/plain") || strings.Contains(lower, "text/css") ||
 		strings.Contains(lower, "application/json") || strings.Contains(lower, "image/svg") {
 		return true
+	}
+	return false
+}
+
+// isLikelyPlaceholderSecret reports whether a captured "Generic API Key" value
+// is an obvious placeholder/example token rather than a real credential — the
+// kind that fills config templates, sample .env files and documentation
+// (api_key = "your-api-key-here", API_KEY=CHANGEME, token: REPLACE_ME). Real
+// keys are high-entropy random strings, so a dictionary token like "example" or
+// "your" appearing inside one is vanishingly unlikely (< 1e-5 for a 16+ char
+// base62 value); matching these substrings removes template noise without
+// hiding genuine secrets. A value that is one character repeated is also a
+// placeholder (xxxxxxxxxxxxxxxx).
+func isLikelyPlaceholderSecret(value string) bool {
+	lower := strings.ToLower(value)
+	placeholders := []string{
+		"your", "example", "placeholder", "changeme", "change_me", "change-me",
+		"replaceme", "replace_me", "replace-me", "insert", "putyour", "put_your",
+		"yourkey", "your_key", "apikeyhere", "api_key_here", "myapikey",
+		"my_api_key", "here", "todo", "fixme", "sample", "dummy", "redacted",
+		"notreal", "notarealkey", "xxxxx", "aaaaa",
+	}
+	for _, p := range placeholders {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	// A run of a single repeated character (xxxxxxxx, 00000000, --------).
+	if len(value) > 0 {
+		allSame := true
+		for i := 1; i < len(value); i++ {
+			if value[i] != value[0] {
+				allSame = false
+				break
+			}
+		}
+		if allSame {
+			return true
+		}
 	}
 	return false
 }

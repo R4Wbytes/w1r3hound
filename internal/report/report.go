@@ -13,9 +13,15 @@ import (
 func GenerateReport(r *core.ReconReport, outputBase string, log *core.Logger) {
 	r.Finalize()
 
+	// One consistent snapshot feeds all three outputs. Taken under the report
+	// lock, it is safe to read here even if a module goroutine is still calling
+	// Add() (the SIGINT partial-report path), and it guarantees the JSON, the
+	// Markdown and the console summary describe the exact same set of findings.
+	snap := r.Snapshot()
+
 	// ── JSON ──
 	jsonPath := outputBase + ".json"
-	if err := r.SaveJSON(jsonPath); err != nil {
+	if err := snap.SaveJSON(jsonPath); err != nil {
 		log.Error("Failed to write JSON report: %v", err)
 	} else {
 		log.Info("JSON report saved: %s", jsonPath)
@@ -23,7 +29,7 @@ func GenerateReport(r *core.ReconReport, outputBase string, log *core.Logger) {
 
 	// ── Markdown Summary ──
 	mdPath := outputBase + ".md"
-	md := generateMarkdown(r)
+	md := generateMarkdown(snap)
 	if err := os.WriteFile(mdPath, []byte(md), 0600); err != nil {
 		log.Error("Failed to write Markdown report: %v", err)
 	} else {
@@ -31,7 +37,7 @@ func GenerateReport(r *core.ReconReport, outputBase string, log *core.Logger) {
 	}
 
 	// ── Console Summary ──
-	printSummary(r, log)
+	printSummary(snap, log)
 }
 
 // mdInline neutralises untrusted text before it is placed into the hand-built
@@ -77,7 +83,7 @@ var mdEscaper = strings.NewReplacer(
 	"!", "\\!",
 )
 
-func generateMarkdown(r *core.ReconReport) string {
+func generateMarkdown(r core.ReportData) string {
 	var sb strings.Builder
 
 	sb.WriteString("# w1r3hound — System Profile Report\n\n")
@@ -158,7 +164,7 @@ func generateMarkdown(r *core.ReconReport) string {
 	return sb.String()
 }
 
-func printSummary(r *core.ReconReport, log *core.Logger) {
+func printSummary(r core.ReportData, log *core.Logger) {
 	fmt.Fprintf(os.Stderr, "\n")
 	log.Module("w1r3hound BREACH REPORT // Summary")
 

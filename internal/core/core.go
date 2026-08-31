@@ -285,6 +285,14 @@ func newHTTPClient(cfg *Config, insecureSkipVerify bool) *http.Client {
 		}
 		roundTripper = &requestHeaderTransport{base: transport, headers: headers}
 	}
+	// Root every request at the operator cancel context (cfg.Cancel, fired on
+	// SIGINT/SIGTERM). DoRequest builds requests with a Background context, so
+	// without this Ctrl-C could tear down the raw net.Dial paths (which derive
+	// cfg.Context directly) but not an in-flight request or response-body read
+	// issued through the shared client. See cancelBridgeTransport.
+	if cfg != nil && cfg.cancelCtx != nil {
+		roundTripper = &cancelBridgeTransport{base: roundTripper, root: cfg.cancelCtx}
+	}
 	targetHost, targetPath := configuredTargetScope(cfg.Target)
 	return &http.Client{
 		Transport: roundTripper,
@@ -387,6 +395,50 @@ func (t *requestHeaderTransport) RoundTrip(req *http.Request) (*http.Response, e
 		cloned.Header.Set(name, value)
 	}
 	return t.base.RoundTrip(cloned)
+}
+
+// cancelBridgeTransport re-roots each request at the operator cancel context
+// (root, == cfg.cancelCtx) IN ADDITION to the per-request timeout the
+// http.Client already layers on. It preserves that timeout by deriving from the
+// request's existing context rather than replacing it, and bridges the root's
+// cancellation in via context.AfterFunc. The registration is torn down when the
+// response body is closed, so it never accumulates across a long scan. On an
+// error (or bodyless response) the bridge is released immediately.
+type cancelBridgeTransport struct {
+	base http.RoundTripper
+	root context.Context
+}
+
+func (t *cancelBridgeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx, cancel := context.WithCancel(req.Context())
+	stop := context.AfterFunc(t.root, cancel)
+	release := func() {
+		stop()
+		cancel()
+	}
+	resp, err := t.base.RoundTrip(req.WithContext(ctx))
+	if err != nil {
+		release()
+		return resp, err
+	}
+	resp.Body = &bridgeBody{ReadCloser: resp.Body, release: release}
+	return resp, nil
+}
+
+// bridgeBody releases the cancel bridge exactly once, after the underlying body
+// is closed — mirroring how http.Client's own cancelTimerBody defers cleanup to
+// Close so connection reuse (which happens on Close after a clean EOF) is not
+// disturbed.
+type bridgeBody struct {
+	io.ReadCloser
+	once    sync.Once
+	release func()
+}
+
+func (b *bridgeBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(b.release)
+	return err
 }
 
 // DoRequest is a convenience wrapper that adds the configured User-Agent
@@ -560,19 +612,30 @@ type Finding struct {
 	Data        any      `json:"data,omitempty"`
 }
 
-type ReconReport struct {
+// ReportData is the serialisable payload of a ReconReport, split out from the
+// mutex so a consistent copy can be taken and rendered without holding the lock
+// (and without go vet flagging a copied sync.Mutex). Its fields are promoted
+// onto ReconReport via embedding, so existing r.Target / r.Findings access is
+// unchanged and the emitted JSON shape is identical.
+type ReportData struct {
 	Target    string    `json:"target"`
 	StartedAt string    `json:"started_at"`
 	EndedAt   string    `json:"ended_at"`
 	Findings  []Finding `json:"findings"`
-	mu        sync.Mutex
+}
+
+type ReconReport struct {
+	ReportData
+	mu sync.Mutex
 }
 
 func NewReport(target string) *ReconReport {
 	return &ReconReport{
-		Target:    target,
-		StartedAt: time.Now().UTC().Format(time.RFC3339),
-		Findings:  []Finding{},
+		ReportData: ReportData{
+			Target:    target,
+			StartedAt: time.Now().UTC().Format(time.RFC3339),
+			Findings:  []Finding{},
+		},
 	}
 }
 
@@ -582,12 +645,40 @@ func (r *ReconReport) Add(f Finding) {
 	r.Findings = append(r.Findings, f)
 }
 
+// Finalize stamps the end time. It takes the lock because the SIGINT handler
+// can call it (through report.GenerateReport) while worker goroutines are still
+// calling Add — writing EndedAt must not race an in-flight Findings append.
 func (r *ReconReport) Finalize() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.EndedAt = time.Now().UTC().Format(time.RFC3339)
 }
 
+// Snapshot returns a race-free copy of the report payload taken under the lock:
+// the scalar fields plus a freshly allocated Findings slice. Renderers (JSON,
+// Markdown, console summary) read from the snapshot so an in-flight Add() from
+// another goroutine — e.g. a module still running when SIGINT triggers the
+// partial-report write — cannot race the reader over the Findings backing
+// array. Finding.Data is copied by reference, which is safe: modules never
+// mutate Data after Add().
+func (r *ReconReport) Snapshot() ReportData {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.ReportData
+	out.Findings = append([]Finding(nil), r.Findings...)
+	return out
+}
+
+// SaveJSON writes the report as indented JSON (0600). It serialises a Snapshot,
+// so it is safe to call while other goroutines are still adding findings.
 func (r *ReconReport) SaveJSON(path string) error {
-	data, err := json.MarshalIndent(r, "", "  ")
+	return r.Snapshot().SaveJSON(path)
+}
+
+// SaveJSON writes an already-captured snapshot. No locking is needed: the value
+// is the caller's own copy.
+func (d ReportData) SaveJSON(path string) error {
+	data, err := json.MarshalIndent(d, "", "  ")
 	if err != nil {
 		return err
 	}

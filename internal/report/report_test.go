@@ -23,7 +23,7 @@ func TestMarkdown_InjectionNeutralised(t *testing.T) {
 		Description: evil,
 	})
 	r.Finalize()
-	md := generateMarkdown(r)
+	md := generateMarkdown(r.Snapshot())
 
 	if strings.Contains(md, "\n## Fake Critical Section") {
 		t.Error("attacker injected a heading into the report")
@@ -70,9 +70,10 @@ func BenchmarkGenerateMarkdown(b *testing.B) {
 		})
 	}
 	r.Finalize()
+	snap := r.Snapshot()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = generateMarkdown(r)
+		_ = generateMarkdown(snap)
 	}
 }

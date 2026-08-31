@@ -2,6 +2,7 @@ package modules
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/R4Wbytes/w1r3hound/internal/core"
@@ -58,6 +59,11 @@ func RunEndpointProbe(cfg *core.Config, report *core.ReconReport, log *core.Logg
 
 	client := core.NewHTTPClient(cfg)
 	target := normalizeTarget(cfg.Target)
+	base, err := url.Parse(target)
+	if err != nil || base.Hostname() == "" {
+		log.Warn("Cannot parse target %q for endpoint probing", target)
+		return
+	}
 	catchAll := calibrateCatchAll(client, target, cfg)
 
 	var candidates []string
@@ -105,8 +111,17 @@ func RunEndpointProbe(cfg *core.Config, report *core.ReconReport, log *core.Logg
 
 	var hits []unauthHit
 	for _, path := range candidates {
-		url := target + path
-		body, status, err := core.FetchBodyRL(client, url, cfg.UserAgent, cfg.RL)
+		// Resolve the endpoint against the target base. Endpoints from JS can be
+		// relative ("/admin"), protocol-relative ("//host/admin") or absolute
+		// ("https://host/admin"); the old `target + path` concatenation produced
+		// malformed URLs like "https://example.comhttps://example.com/admin" for
+		// the absolute forms, so those sensitive endpoints were silently never
+		// probed. buildProbeURL also confines probing to the exact target host.
+		probeURL, ok := buildProbeURL(base, path)
+		if !ok {
+			continue
+		}
+		body, status, err := core.FetchBodyRL(client, probeURL, cfg.UserAgent, cfg.RL)
 		if err != nil || status == 404 || status == 405 || status >= 500 {
 			continue
 		}
@@ -149,4 +164,26 @@ func stripQuery(ep string) string {
 		return ep[:i]
 	}
 	return ep
+}
+
+// buildProbeURL turns a JS-discovered endpoint — a relative path ("/admin"), a
+// protocol-relative reference ("//host/admin") or an absolute URL
+// ("https://host/admin"), all already constrained to the target's registrable
+// domain by jsanalysis — into a well-formed absolute URL rooted at the target.
+// It returns ok=false when the endpoint resolves to a different host than the
+// target, so probing never leaves the exact target host and never issues the
+// malformed "target + absoluteURL" request the old concatenation produced.
+func buildProbeURL(base *url.URL, endpoint string) (string, bool) {
+	ref, err := url.Parse(endpoint)
+	if err != nil {
+		return "", false
+	}
+	resolved := base.ResolveReference(ref)
+	if resolved.Scheme != "http" && resolved.Scheme != "https" {
+		return "", false
+	}
+	if !strings.EqualFold(resolved.Hostname(), base.Hostname()) {
+		return "", false
+	}
+	return resolved.String(), true
 }

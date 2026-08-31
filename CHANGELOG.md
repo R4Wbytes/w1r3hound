@@ -5,6 +5,84 @@ follows [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) where
 applicable.
 
+## [Unreleased]
+
+Continuation audit (BUG-1 … BUG-3): concurrency-safety and crawler fixes,
+each landed with a regression test.
+
+### Fixed
+
+- **Data race in report generation on SIGINT/SIGTERM** (`internal/core/core.go`,
+  `internal/report/report.go`): the signal handler wrote a partial report from a
+  separate goroutine while modules were still calling `ReconReport.Add()`.
+  `Finalize()` and `SaveJSON()` (and the Markdown/console renderers) read
+  `Findings`/`EndedAt` with no lock — a data race under Go's memory model that
+  could serialise a torn slice. The serialisable payload is now split into an
+  embedded `ReportData`; `Finalize()`, `Snapshot()` and `SaveJSON()` all go
+  through the mutex, and `GenerateReport` renders every output from one
+  consistent, lock-taken snapshot. JSON shape is unchanged. Verified with a
+  `-race` regression test that fails on the pre-fix code.
+- **`cfg.Cancel()` did not abort in-flight HTTP requests** (`internal/core/core.go`):
+  `DoRequest` built requests with a `context.Background()`, so Ctrl-C could tear
+  down raw `net.Dial` paths but not a request or response-body read already in
+  flight through the shared client — it blocked until the full `Client.Timeout`.
+  A `cancelBridgeTransport` now re-roots every request at the operator cancel
+  context in addition to the per-request timeout, releasing the bridge on body
+  close so it never accumulates across a scan. No call sites changed.
+- **O(n²) endpoint deduplication in the crawler** (`internal/modules/crawler.go`):
+  a linear scan of `result.Endpoints` ran under lock for every crawled URL.
+  Replaced with an `endpointSet` map lookup (matching the existing
+  `visited`/`paramSet`/`extLinks` sets); behaviour is preserved and endpoints
+  stay unique.
+- **Malformed probe URLs for absolute JS endpoints** (`internal/modules/endpointprobe.go`,
+  C-13): endpoints extracted from JavaScript can be relative (`/admin`),
+  protocol-relative (`//host/admin`) or absolute (`https://host/admin`). The old
+  `target + path` concatenation produced strings like
+  `https://example.comhttps://example.com/admin` for the absolute forms, so those
+  sensitive endpoints were silently never probed (a false negative) and the
+  request was wasted. Endpoints are now resolved against the target base with
+  `url.ResolveReference` and confined to the exact target host.
+
+### Detection accuracy
+
+- **Placeholder API keys flagged as secrets** (`internal/modules/content.go`, FP):
+  the "Generic API Key" pattern matched template/example values such as
+  `api_key = "your-api-key-here"` and `API_KEY=CHANGEME`. A conservative
+  placeholder filter now drops obvious example tokens (real high-entropy keys are
+  essentially never affected) without hiding genuine secrets.
+- **Secrets in source maps not scanned** (`internal/modules/content.go`, FN-5.3):
+  content fetched and validated `.js.map` source maps but never scanned their
+  bodies, even though a map's embedded `sourcesContent` holds the original,
+  un-minified source that frequently still contains hardcoded secrets stripped
+  from the served bundle. Validated source-map bodies are now scanned with the
+  secret patterns — no extra requests, since the map was already fetched.
+
+### Full module-by-module audit
+
+- **security.txt expiry check never fired** (`internal/modules/metafiles.go`, FN):
+  the RFC 9116 `Expires` field was parsed with `time.RFC1123`, but the spec
+  mandates RFC 3339 (`2025-12-31T23:59:59Z`), so the parse always failed and the
+  "security.txt has expired" finding was dead code for every spec-compliant file.
+  Now parses RFC 3339 (with lenient fallbacks) and logs unrecognised formats.
+- **Quadratic DNS-name parsing → AXFR CPU DoS** (`internal/modules/dnsextra.go`,
+  C-5): `extractDNSNames` restarts a name read at every byte offset, and each
+  read can follow compression pointers doing O(len(msg)) work — so a malicious
+  AXFR response (up to 64 KB/message, ~160 messages) full of compression pointers
+  drove it quadratic, ~96 s of scanner CPU. A shared byte budget now bounds the
+  per-message work at O(n); benign zones are unaffected. Guarded by a pointer-bomb
+  regression test.
+- **WHOIS/RDAP used an unverified TLS client** (`internal/modules/crawler.go`,
+  C-3 consistency): `RunWhois` fetched `rdap.org` with `NewHTTPClient` (TLS
+  verification off under `-skip-tls-verify`), unlike every other third-party
+  intel call (wayback/asn/passive), letting a MITM forge registrar/nameserver
+  data in the report. Switched to `NewVerifiedHTTPClient`.
+
+Reviewed with no changes required (verified sound): the raw-UDP DNS engine
+(transaction-ID + QNAME anti-spoofing, `crypto/rand` IDs, bounded compression-
+pointer following), the PBKDF2-HMAC-SHA256 login KDF, the webui subprocess
+runner (no-shell argv, symlink-confined paths, BOLA ownership checks), and the
+soft-404/catch-all detection across discovery/api/metafiles/webserver.
+
 ## [2.0.0] — 2026-08-30
 
 Major release: localhost-only Web GUI dashboard.

@@ -161,6 +161,18 @@ func buildDNSQuery(domain string, qtype uint16, recursive bool) []byte {
 // AXFR name scraper (heuristic, walks every offset) and the typed answer
 // parser (structured, walks one RR at a time) below.
 func readDNSName(msg []byte, start int) (name string, next int) {
+	// A single well-formed name is ≤255 bytes; len(msg) is generous headroom and
+	// still caps an adversarial pointer chain from one start offset at O(len(msg)).
+	budget := len(msg) + 16
+	return readDNSNameBudget(msg, start, &budget)
+}
+
+// readDNSNameBudget is readDNSName with a caller-supplied work budget, decremented
+// by the bytes of each label consumed. When budget is shared across many reads
+// (extractDNSNames restarts a read at every offset), it bounds the cumulative
+// label-copy work at O(len(msg)) so a compression-pointer-laden message cannot
+// drive the every-offset scan quadratic. A nil budget is unbounded.
+func readDNSNameBudget(msg []byte, start int, budget *int) (name string, next int) {
 	var labels []string
 	pos := start
 	endPos := -1 // position after the first compression pointer
@@ -189,6 +201,12 @@ func readDNSName(msg []byte, start int) (name string, next int) {
 		if pos+1+l > len(msg) {
 			break
 		}
+		if budget != nil {
+			*budget -= 1 + l
+			if *budget < 0 {
+				break
+			}
+		}
 		labels = append(labels, string(msg[pos+1:pos+1+l]))
 		pos += 1 + l
 	}
@@ -204,9 +222,19 @@ func extractDNSNames(msg []byte, domain string) []string {
 	var names []string
 	i := 12 // skip header
 
+	// One byte budget shared across every offset restart bounds total label-copy
+	// work at O(len(msg)). Without it, a malicious AXFR message (up to 64 KB over
+	// TCP) full of compression pointers makes each of the ~len(msg) restarts do
+	// O(len(msg)) work — a quadratic CPU DoS on the scanner. 8× headroom so even a
+	// heavily-compressed legitimate zone still parses fully.
+	budget := len(msg) * 8
+
 	// Walk through the message extracting names
 	for i < len(msg)-1 {
-		name, next := readDNSName(msg, i)
+		name, next := readDNSNameBudget(msg, i, &budget)
+		if budget < 0 {
+			break // work budget exhausted (adversarial input) — stop scanning
+		}
 		// Require a real label boundary: "x.example.com" or exactly "example.com",
 		// never "notexample.com" which merely shares the suffix. A malicious AXFR
 		// response could otherwise inject sibling-domain names into the shared

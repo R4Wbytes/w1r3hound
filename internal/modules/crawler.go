@@ -76,10 +76,11 @@ func RunCrawler(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	maxAttempts := maxPages*5 + 10
 
 	var (
-		visited  = make(map[string]bool)
-		queue    = []string{target}
-		paramSet = make(map[string]bool)
-		extLinks = make(map[string]bool)
+		visited     = make(map[string]bool)
+		queue       = []string{target}
+		paramSet    = make(map[string]bool)
+		extLinks    = make(map[string]bool)
+		endpointSet = make(map[string]bool)
 	)
 
 	log.Info("Starting crawl from %s (max %d pages)...", target, maxPages)
@@ -237,21 +238,23 @@ func RunCrawler(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 		}
 
 		apiPatterns := []string{"/api/", "/v1/", "/v2/", "/v3/", "/graphql", "/rest/"}
+		isAPIEndpoint := false
 		for _, ap := range apiPatterns {
 			if strings.Contains(currentURL, ap) {
-				visitMu.Lock()
-				found := false
-				for _, e := range result.Endpoints {
-					if e == currentURL {
-						found = true
-						break
-					}
-				}
-				if !found {
-					result.Endpoints = append(result.Endpoints, currentURL)
-				}
-				visitMu.Unlock()
+				isAPIEndpoint = true
+				break
 			}
+		}
+		if isAPIEndpoint {
+			// O(1) dedup via endpointSet, matching visited/paramSet/extLinks. The
+			// old linear scan over result.Endpoints ran under visitMu once per
+			// crawled URL, so it was O(n) per call and O(n²) across a large crawl.
+			visitMu.Lock()
+			if !endpointSet[currentURL] {
+				endpointSet[currentURL] = true
+				result.Endpoints = append(result.Endpoints, currentURL)
+			}
+			visitMu.Unlock()
 		}
 
 		// Enqueue new URLs
@@ -374,8 +377,12 @@ type WhoisResult struct {
 func RunWhois(cfg *core.Config, report *core.ReconReport, log *core.Logger) {
 	log.Module("RECON // WHOIS Intelligence")
 
-	// Use web-based WHOIS to avoid external deps
-	client := core.NewHTTPClient(cfg)
+	// Use web-based WHOIS to avoid external deps. rdap.org is a fixed trusted
+	// third-party intel API, so verify its TLS (TLS 1.2+) regardless of the
+	// operator's -skip-tls-verify flag — a MITM must not be able to feed forged
+	// registrar/nameserver data into the report. Matches the C-3 hardening the
+	// wayback/asn/passive sources already use.
+	client := core.NewVerifiedHTTPClient(cfg)
 	url := fmt.Sprintf("https://rdap.org/domain/%s", cfg.Domain)
 
 	body, status, err := core.FetchBodyRL(client, url, cfg.UserAgent, cfg.RL)

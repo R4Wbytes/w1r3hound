@@ -380,7 +380,7 @@ func analyzeSecurityTxt(body, target string, cfg *core.Config, report *core.Reco
 	// has passed — an expired security.txt means the contact/policy
 	// information may be stale and should not be relied upon.
 	if expires, ok := fields["expires"]; ok && len(expires) > 0 {
-		if t, err := time.Parse(time.RFC1123, expires[0]); err == nil {
+		if t, perr := parseSecurityTxtExpires(expires[0]); perr == nil {
 			if time.Now().After(t) {
 				log.Warn("security.txt Expires date has passed: %s", expires[0])
 				report.Add(core.Finding{
@@ -393,6 +393,8 @@ func analyzeSecurityTxt(body, target string, cfg *core.Config, report *core.Reco
 			} else {
 				log.Info("security.txt Expires: %s (valid)", expires[0])
 			}
+		} else {
+			log.Debug("security.txt Expires %q not in a recognised date format: %v", expires[0], perr)
 		}
 	}
 
@@ -412,6 +414,31 @@ func analyzeSecurityTxt(body, target string, cfg *core.Config, report *core.Reco
 	if len(extraURLs) > 0 {
 		cfg.AddSharedURLs(extraURLs)
 	}
+}
+
+// parseSecurityTxtExpires parses the RFC 9116 §2.5.5 Expires field. The spec
+// requires an RFC 3339 timestamp (e.g. "2025-12-31T23:59:59Z"; Go's parser also
+// accepts a fractional-second part such as ".000Z"). A few sites use other
+// common date formats, so those are tried as a fallback. The previous code
+// parsed only RFC 1123 — which never matches a spec-compliant value — so the
+// expiry check silently never fired.
+func parseSecurityTxtExpires(v string) (time.Time, error) {
+	v = strings.TrimSpace(v)
+	layouts := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+		time.RFC1123,
+		time.RFC1123Z,
+	}
+	var err error
+	for _, layout := range layouts {
+		var t time.Time
+		if t, err = time.Parse(layout, v); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, err
 }
 
 // ── robots.txt Disallow verification (WSTG-CONF-04) ──
