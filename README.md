@@ -90,6 +90,7 @@ w1r3hound -t target.com -w /path/to/subdomains.txt -o bb_report
   -rate              Max requests/sec (0 = unlimited)
   -timeout           Per-request timeout (default: 10s)
   -ua                Custom User-Agent
+  -mcp               Start as a Model Context Protocol (JSON-RPC 2.0 / stdio) server for AI agents
 ```
 
 ## Scan Protocols
@@ -143,6 +144,7 @@ command line.
 | Alias | Internal | What it does | WSTG |
 |-------|----------|-------------|------|
 | `jsdeep` | jsdeep | JS endpoint extraction (LinkFinder style) | INFO-05 |
+| `endprobe` | endprobe | Unauthenticated access on JS-discovered endpoints | ATHZ-02, CONF-05 |
 | `takeover` | takeover | Subdomain takeover via HTTP fingerprints (37 services) | CONF-10 |
 
 ### Beyond WSTG
@@ -352,6 +354,11 @@ w1r3hound/
 │   │   ├── surface.go               # Attack-surface summary aggregator
 │   │   ├── psl.go                   # Public Suffix List (Mozilla PSL)
 │   │   └── helpers.go               # Shared utils
+│   ├── mcp/
+│   │   ├── server.go                # MCP JSON-RPC 2.0 stdio server
+│   │   ├── tools.go                 # Tool/prompt/completion definitions, scan execution
+│   │   ├── server_test.go           # Protocol-level tests
+│   │   └── tools_test.go            # Unit tests for tools, prompts, completions
 │   └── report/
 │       └── report.go                # JSON + Markdown report gen
 ├── webui/                           # localhost-only dashboard console
@@ -372,6 +379,34 @@ w1r3hound/
 │           └── app.js               # SPA controller (all pages)
 ├── LICENSE
 └── README.md
+```
+
+## MCP Server (AI Agent Integration)
+
+w1r3hound exposes all its recon capabilities to AI agents via the
+[Model Context Protocol](https://modelcontextprotocol.io/) (MCP).
+Launch with `--mcp` to start a JSON-RPC 2.0 server over stdio
+(protocol version `2025-06-18`).
+
+**Capabilities:** tools, prompts, completions, logging.
+
+**Tools** — `scan` (async with cancellation + progress), `list_modules`,
+`suggest_modules`, `server_info`.
+
+**Prompts** — five canned recon workflows: `bug_bounty_recon`,
+`passive_recon`, `subdomain_takeover_check`, `full_recon`,
+`web_assessment`.
+
+**Completions** — auto-complete for module names, port ranges, severity
+levels, and prompt names.
+
+**Security** — the SSRF guard (`-block-private-egress`) is ON by default
+in MCP mode to prevent agents from scanning private networks.
+Pass `allow_private=true` in the scan arguments to override.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+  "name":"scan","arguments":{"target":"example.com","modules":"dns,httprobe"}}}
 ```
 
 ## Known Limitations

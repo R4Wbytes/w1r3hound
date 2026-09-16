@@ -10,8 +10,37 @@ applicable.
 Continuation audit (BUG-1 … BUG-3): concurrency-safety and crawler fixes,
 each landed with a regression test.
 
+### Added
+
+- **MCP server for AI agent integration** (`internal/mcp/`, `--mcp` flag):
+  JSON-RPC 2.0 over stdio server exposing all 21 recon modules as tools
+  (protocol version `2025-06-18`). Zero external dependencies.
+  - Tools: `scan` (async with cancellation + progress notifications),
+    `list_modules`, `suggest_modules`, `server_info`.
+  - Prompts: five canned recon workflows (`bug_bounty_recon`, `passive_recon`,
+    `subdomain_takeover_check`, `full_recon`, `web_assessment`).
+  - Completions: auto-complete for module names, port ranges, severity levels,
+    prompt names.
+  - Structured output: `outputSchema` on scan tool with JSON Schema describing
+    the response shape.
+  - Spec compliance: `server/discover`, `notifications/cancelled` (async scan
+    cancellation), `logging/setLevel`, `notifications/progress`, batch rejection,
+    null-ID rejection, `resultType` on all responses, content annotations.
+  - SSRF guard ON by default in MCP mode (`-block-private-egress=true`);
+    overridable via `allow_private` scan argument.
+  - `logTee` writer streams Go log output as `notifications/message` to clients.
+
 ### Fixed
 
+- **MCP `prompts/get` nil-args panic** (`internal/mcp/tools.go`): sending
+  `prompts/get` without an `arguments` field caused a nil map access that
+  crashed the server. Added nil guard.
+- **MCP scan goroutine crash recovery** (`internal/mcp/server.go`): a panic
+  outside `safeRun()` (config building, report finalization) would kill the
+  entire Go process. Added `recover()` that sends an error response instead.
+- **MCP completion scoping** (`internal/mcp/tools.go`): `completeArgument`
+  matched `argName == "modules"` regardless of ref type, returning scan
+  module completions for any tool. Tightened to require `ref/tool` + `scan`.
 - **Data race in report generation on SIGINT/SIGTERM** (`internal/core/core.go`,
   `internal/report/report.go`): the signal handler wrote a partial report from a
   separate goroutine while modules were still calling `ReconReport.Add()`.

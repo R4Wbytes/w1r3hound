@@ -33,9 +33,26 @@ flowchart LR
   Rep -->|"writes"| Results
 ```
 
+```mermaid
+flowchart LR
+  subgraph mcp [MCP Server - --mcp]
+    MCP["internal/mcp/server.go - JSON-RPC 2.0 stdio"]
+    Tools["internal/mcp/tools.go - tool/prompt/completion defs"]
+    MCP --> Tools
+  end
+  Tools -->|"builds Config, calls modules directly"| Core
+```
+
+The MCP server is a third entry point: `--mcp` starts a JSON-RPC 2.0 server
+over stdio that exposes recon modules as MCP tools for AI agents. It calls the
+engine in-process (no subprocess) with SSRF guard ON by default. Supports async
+scan cancellation, progress notifications, prompts, completions, and structured
+output (protocol version `2025-06-18`).
+
 Key trust boundary: the browser talks only to the loopback Go server; the Go
-server spawns the CLI with a validated `[]string` argv (never a shell). The CLI
-is the only component that touches the network target.
+server spawns the CLI with a validated `[]string` argv (never a shell). The MCP
+server runs in-process with the engine. The CLI (and MCP server) are the only
+components that touch the network target.
 
 ## 2. Build & health
 
@@ -125,8 +142,18 @@ inline `style="..."` attributes (allowed by `style-src 'unsafe-inline'`).
 
 ## 7. Automated test coverage (current)
 
-> **Updated 2026-08-27 (QA rounds 13–18).** The snapshot below is the original
-> engine-only baseline; the tree now has **38 `_test.go` files, ~183 `Test` +
+> **Updated 2026-09-16 (MCP server).** The snapshot below is the original
+> engine-only baseline; the tree now has **40 `_test.go` files, ~274 `Test` +
+> 3 `Fuzz` + 3 `Benchmark` functions** spanning the engine, the webui, *and*
+> the MCP server (`internal/mcp/server_test.go` 47 tests,
+> `internal/mcp/tools_test.go` 44 tests — protocol dispatch, tool execution,
+> prompts, completions, scan integration, SSRF guard, cancellation,
+> progress notifications, race detection). Plus a hermetic Playwright smoke
+> under `webui/e2e/` and a CI workflow at `.github/workflows/ci.yml`.
+> See §7a for the reconciled gaps.
+>
+> Previous update: 2026-08-27 (QA rounds 13–18). The original count was
+> **38 `_test.go` files, ~183 `Test` +
 > 3 `Fuzz` + 3 `Benchmark` functions** spanning the engine *and* the webui
 > (validation, parity, transport guard, CSP, jobs/SSE, login/RBAC/session,
 > per-user isolation), plus a hermetic Playwright smoke under `webui/e2e/` and a
