@@ -122,8 +122,8 @@ func TestToolsList(t *testing.T) {
 	}
 	result, _ := resp.Result.(map[string]any)
 	tools, _ := result["tools"].([]any)
-	if len(tools) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(tools))
+	if len(tools) != 4 {
+		t.Fatalf("expected 4 tools, got %d", len(tools))
 	}
 
 	names := make(map[string]bool)
@@ -131,11 +131,10 @@ func TestToolsList(t *testing.T) {
 		tool, _ := t.(map[string]any)
 		names[tool["name"].(string)] = true
 	}
-	if !names["list_modules"] {
-		t.Error("missing list_modules tool")
-	}
-	if !names["scan"] {
-		t.Error("missing scan tool")
+	for _, want := range []string{"list_modules", "suggest_modules", "server_info", "scan"} {
+		if !names[want] {
+			t.Errorf("missing %s tool", want)
+		}
 	}
 }
 
@@ -324,7 +323,7 @@ func TestNotificationWithoutJsonrpcSilent(t *testing.T) {
 	}
 }
 
-func TestToolsListContainsNewParams(t *testing.T) {
+func TestToolsListContainsAllParams(t *testing.T) {
 	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
 	resp := unmarshalResponse(t, raw)
 	result, _ := resp.Result.(map[string]any)
@@ -334,14 +333,60 @@ func TestToolsListContainsNewParams(t *testing.T) {
 		if tm["name"] == "scan" {
 			schema, _ := tm["inputSchema"].(map[string]any)
 			props, _ := schema["properties"].(map[string]any)
-			if _, ok := props["max_duration_seconds"]; !ok {
-				t.Error("scan tool schema missing max_duration_seconds")
+			required := []string{
+				"max_duration_seconds", "allow_private",
+				"user_agent", "headers", "wordlist", "dir_wordlist",
+				"dir_extensions", "skip_tls_verify", "resolver", "resolvers",
+				"wayback_limit", "crawl_pages", "js_files", "min_severity",
 			}
-			if _, ok := props["allow_private"]; !ok {
-				t.Error("scan tool schema missing allow_private")
+			for _, p := range required {
+				if _, ok := props[p]; !ok {
+					t.Errorf("scan tool schema missing %s", p)
+				}
 			}
 			return
 		}
 	}
 	t.Error("scan tool not found")
+}
+
+func TestSuggestModulesViaRPC(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"suggest_modules","arguments":{"objective":"find subdomains"}}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error != nil {
+		t.Fatalf("suggest_modules error: %v", resp.Error)
+	}
+	result, _ := resp.Result.(map[string]any)
+	isErr, _ := result["isError"].(bool)
+	if isErr {
+		t.Error("suggest_modules returned isError=true")
+	}
+	content, _ := result["content"].([]any)
+	first, _ := content[0].(map[string]any)
+	text, _ := first["text"].(string)
+	if !strings.Contains(text, "recommended_modules") {
+		t.Error("suggest_modules response missing recommended_modules")
+	}
+}
+
+func TestServerInfoViaRPC(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"server_info","arguments":{}}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error != nil {
+		t.Fatalf("server_info error: %v", resp.Error)
+	}
+	result, _ := resp.Result.(map[string]any)
+	isErr, _ := result["isError"].(bool)
+	if isErr {
+		t.Error("server_info returned isError=true")
+	}
+	content, _ := result["content"].([]any)
+	first, _ := content[0].(map[string]any)
+	text, _ := first["text"].(string)
+	if !strings.Contains(text, "w1r3hound") {
+		t.Error("server_info response missing w1r3hound name")
+	}
+	if !strings.Contains(text, "suggest_modules") {
+		t.Error("server_info response missing suggest_modules in tools list")
+	}
 }

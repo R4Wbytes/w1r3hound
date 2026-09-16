@@ -44,6 +44,17 @@ type Server struct {
 	mu      sync.Mutex // serializes writes to stdout
 }
 
+// notify sends a JSON-RPC notification (no id, no response expected).
+func (s *Server) notify(method string, params any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = s.enc.Encode(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  method,
+		"params":  params,
+	})
+}
+
 // Serve is the public entry point called from main when --mcp is set.
 // It blocks until stdin is closed (EOF).
 func Serve(version string) {
@@ -142,7 +153,7 @@ func (s *Server) handleToolsCall(req *request) {
 		return
 	}
 
-	text, isErr := executeTool(params.Name, params.Arguments)
+	text, isErr := executeTool(params.Name, params.Arguments, s)
 	s.send(req.ID, map[string]any{
 		"content": []map[string]string{
 			{"type": "text", "text": text},

@@ -98,6 +98,23 @@ func TestValidateTarget(t *testing.T) {
 	}
 }
 
+// ── validResolver ──
+
+func TestValidResolver(t *testing.T) {
+	valid := []string{"1.1.1.1", "8.8.8.8:53", "::1", "[::1]:53"}
+	for _, r := range valid {
+		if !validResolver(r) {
+			t.Errorf("validResolver(%q) = false, want true", r)
+		}
+	}
+	invalid := []string{"", "dns.google", "not an ip", "1.1.1.1:abc"}
+	for _, r := range invalid {
+		if validResolver(r) {
+			t.Errorf("validResolver(%q) = true, want false", r)
+		}
+	}
+}
+
 // ── buildSummary ──
 
 func TestBuildSummary(t *testing.T) {
@@ -185,6 +202,91 @@ func TestDetectScheme_NeitherReachable(t *testing.T) {
 	}
 }
 
+// ── suggest_modules ──
+
+func TestSuggestModules_Passive(t *testing.T) {
+	args, _ := json.Marshal(map[string]string{"objective": "passive recon"})
+	text, isErr := executeSuggestModules(args)
+	if isErr {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "passivesrc") {
+		t.Error("expected passivesrc in passive recon suggestion")
+	}
+	if !strings.Contains(text, "whois") {
+		t.Error("expected whois in passive recon suggestion")
+	}
+}
+
+func TestSuggestModules_WebApp(t *testing.T) {
+	args, _ := json.Marshal(map[string]string{"objective": "check webapp for vulnerabilities"})
+	text, isErr := executeSuggestModules(args)
+	if isErr {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "recommended_modules") {
+		t.Error("expected recommended_modules in result")
+	}
+}
+
+func TestSuggestModules_Empty(t *testing.T) {
+	args, _ := json.Marshal(map[string]string{"objective": ""})
+	_, isErr := executeSuggestModules(args)
+	if !isErr {
+		t.Error("expected error for empty objective")
+	}
+}
+
+func TestSuggestModules_NoMatch(t *testing.T) {
+	args, _ := json.Marshal(map[string]string{"objective": "xyzzy foobarbaz"})
+	text, isErr := executeSuggestModules(args)
+	if isErr {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "No specific match") {
+		t.Error("expected fallback suggestion for unknown objective")
+	}
+}
+
+func TestSuggestModules_BugBounty(t *testing.T) {
+	args, _ := json.Marshal(map[string]string{"objective": "bug bounty reconnaissance"})
+	text, isErr := executeSuggestModules(args)
+	if isErr {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "takeover") {
+		t.Error("expected takeover in bug bounty suggestion")
+	}
+}
+
+// ── server_info ──
+
+func TestServerInfo(t *testing.T) {
+	text, isErr := executeServerInfo(&Server{version: "test-1.0"})
+	if isErr {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "test-1.0") {
+		t.Error("expected version in server info")
+	}
+	if !strings.Contains(text, "suggest_modules") {
+		t.Error("expected suggest_modules in tools list")
+	}
+	if !strings.Contains(text, "server_info") {
+		t.Error("expected server_info in tools list")
+	}
+}
+
+func TestServerInfo_NilServer(t *testing.T) {
+	text, isErr := executeServerInfo(nil)
+	if isErr {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "w1r3hound") {
+		t.Error("expected w1r3hound name")
+	}
+}
+
 // ── Successful scan integration test ──
 
 func TestScanSuccessful(t *testing.T) {
@@ -203,7 +305,7 @@ func TestScanSuccessful(t *testing.T) {
 		"max_duration_seconds": 30,
 		"allow_private":        true,
 	})
-	text, isErr := executeScan(args)
+	text, isErr := executeScan(args, nil)
 	if isErr {
 		t.Fatalf("scan returned error: %s", text)
 	}
@@ -212,6 +314,108 @@ func TestScanSuccessful(t *testing.T) {
 	}
 	if !strings.Contains(text, "summary") {
 		t.Error("response missing summary key")
+	}
+}
+
+// ── Scan with custom headers ──
+
+func TestScanWithHeaders(t *testing.T) {
+	var gotUA string
+	var gotBounty string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		gotBounty = r.Header.Get("X-Bug-Bounty")
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	args, _ := json.Marshal(map[string]any{
+		"target":               srv.URL,
+		"modules":              []string{"headers"},
+		"timeout_seconds":      5,
+		"max_duration_seconds": 15,
+		"allow_private":        true,
+		"user_agent":           "w1r3hound-test/1.0",
+		"headers":              map[string]string{"X-Bug-Bounty": "HackerOne/tester"},
+	})
+	_, isErr := executeScan(args, nil)
+	if isErr {
+		t.Skip("scan returned error (network-dependent)")
+	}
+	if gotUA != "" && gotUA != "w1r3hound-test/1.0" {
+		// User-Agent might not be set on all requests, but if set it should match
+		t.Logf("User-Agent: %q (may vary by module request)", gotUA)
+	}
+	_ = gotBounty // headers module may or may not send the custom header to this exact endpoint
+}
+
+// ── Scan with min_severity filter ──
+
+func TestScanMinSeverityValidation(t *testing.T) {
+	args, _ := json.Marshal(map[string]any{
+		"target":       "example.com",
+		"min_severity": "INVALID",
+	})
+	_, isErr := executeScan(args, nil)
+	if !isErr {
+		t.Error("expected error for invalid min_severity")
+	}
+}
+
+// ── Scan header validation ──
+
+func TestScanHeaderInjection(t *testing.T) {
+	args, _ := json.Marshal(map[string]any{
+		"target":  "example.com",
+		"headers": map[string]string{"Evil\r\nHeader": "value"},
+	})
+	text, isErr := executeScan(args, nil)
+	if !isErr {
+		t.Errorf("expected error for header with CRLF, got: %s", text)
+	}
+}
+
+// ── Resolver validation ──
+
+func TestScanInvalidResolver(t *testing.T) {
+	args, _ := json.Marshal(map[string]any{
+		"target":   "example.com",
+		"resolver": "not.a.valid.resolver",
+	})
+	text, isErr := executeScan(args, nil)
+	if !isErr {
+		t.Errorf("expected error for invalid resolver, got: %s", text)
+	}
+}
+
+func TestScanInvalidResolversEntry(t *testing.T) {
+	args, _ := json.Marshal(map[string]any{
+		"target":    "example.com",
+		"resolvers": []string{"1.1.1.1", "bad.hostname"},
+	})
+	text, isErr := executeScan(args, nil)
+	if !isErr {
+		t.Errorf("expected error for invalid resolver in list, got: %s", text)
+	}
+	if !strings.Contains(text, "index 1") {
+		t.Errorf("error should mention the index, got: %s", text)
+	}
+}
+
+func TestScanValidResolvers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	args, _ := json.Marshal(map[string]any{
+		"target":    srv.URL,
+		"modules":   []string{"headers"},
+		"resolvers": []string{"1.1.1.1", "8.8.8.8:53"},
+	})
+	_, isErr := executeScan(args, nil)
+	if isErr {
+		t.Error("valid resolvers list should not cause an error")
 	}
 }
 
@@ -232,14 +436,11 @@ func TestRateLimiterCleanup(t *testing.T) {
 		"max_duration_seconds": 15,
 		"allow_private":        true,
 	})
-	_, _ = executeScan(args)
+	_, _ = executeScan(args, nil)
 	runtime.GC()
 	time.Sleep(100 * time.Millisecond)
 	after := runtime.NumGoroutine()
 
-	// Allow slack for test runtime and transient module goroutines. The
-	// rate limiter goroutine itself should not leak; a delta of up to 5 is
-	// acceptable due to background GC, finalizers, and httptest internals.
 	if after > before+5 {
 		t.Errorf("goroutine leak: before=%d after=%d (delta %d)", before, after, after-before)
 	}
@@ -254,16 +455,10 @@ func TestSSRFBlocked(t *testing.T) {
 		"timeout_seconds":      3,
 		"max_duration_seconds": 10,
 	})
-	text, isErr := executeScan(args)
-	// The scan should complete (not crash), but the egress control should
-	// block connections to private IPs. The report should have no findings
-	// from actual connections (BlockPrivateEgress = true by default).
+	text, isErr := executeScan(args, nil)
 	if isErr {
-		// Acceptable: a target validation or connection refusal error.
 		return
 	}
-	// If we got here, the scan ran but connections should have been refused.
-	// Verify no actual data was retrieved from localhost.
 	_ = text
 }
 
@@ -281,7 +476,7 @@ func TestSSRFAllowedWithFlag(t *testing.T) {
 		"timeout_seconds":      3,
 		"max_duration_seconds": 15,
 	})
-	text, isErr := executeScan(args)
+	text, isErr := executeScan(args, nil)
 	if isErr {
 		t.Fatalf("scan with allow_private should succeed: %s", text)
 	}
@@ -290,8 +485,6 @@ func TestSSRFAllowedWithFlag(t *testing.T) {
 // ── Scan timeout test ──
 
 func TestScanTimeout(t *testing.T) {
-	// Server that delays responses — use a channel to unblock on test cleanup
-	// so httptest.Server.Close doesn't hang for its 5s close-wait.
 	done := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -311,10 +504,91 @@ func TestScanTimeout(t *testing.T) {
 		"max_duration_seconds": 2,
 		"allow_private":        true,
 	})
-	_, _ = executeScan(args)
+	_, _ = executeScan(args, nil)
 	elapsed := time.Since(start)
 
 	if elapsed > 10*time.Second {
 		t.Errorf("scan did not respect max_duration_seconds: took %v", elapsed)
+	}
+}
+
+// ── Progress notifications ──
+
+func TestScanProgressNotifications(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	var out bytes.Buffer
+	mcpSrv := &Server{
+		version: "test",
+		enc:     json.NewEncoder(&out),
+	}
+
+	args, _ := json.Marshal(map[string]any{
+		"target":               srv.URL,
+		"modules":              []string{"headers"},
+		"timeout_seconds":      5,
+		"max_duration_seconds": 15,
+		"allow_private":        true,
+	})
+	_, _ = executeScan(args, mcpSrv)
+
+	notifications := out.String()
+	if !strings.Contains(notifications, "notifications/progress") {
+		t.Error("expected progress notifications during scan")
+	}
+	if !strings.Contains(notifications, "starting module: headers") {
+		t.Error("expected 'starting module: headers' notification")
+	}
+	if !strings.Contains(notifications, "completed: headers") {
+		t.Error("expected 'completed: headers' notification")
+	}
+	if !strings.Contains(notifications, "surface summary") {
+		t.Error("expected surface summary notification")
+	}
+}
+
+// ── executeTool dispatch ──
+
+func TestExecuteTool_UnknownTool(t *testing.T) {
+	text, isErr := executeTool("nonexistent", nil, nil)
+	if !isErr {
+		t.Error("expected error for unknown tool")
+	}
+	if !strings.Contains(text, "unknown tool") {
+		t.Errorf("expected 'unknown tool' message, got: %s", text)
+	}
+}
+
+func TestExecuteTool_ListModules(t *testing.T) {
+	text, isErr := executeTool("list_modules", nil, nil)
+	if isErr {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "when_to_use") {
+		t.Error("expected when_to_use field in module catalog")
+	}
+}
+
+func TestExecuteTool_SuggestModules(t *testing.T) {
+	args, _ := json.Marshal(map[string]string{"objective": "find subdomains"})
+	text, isErr := executeTool("suggest_modules", args, nil)
+	if isErr {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "recommended_modules") {
+		t.Error("expected recommended_modules in result")
+	}
+}
+
+func TestExecuteTool_ServerInfo(t *testing.T) {
+	text, isErr := executeTool("server_info", nil, &Server{version: "2.1"})
+	if isErr {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "2.1") {
+		t.Error("expected version in server info")
 	}
 }

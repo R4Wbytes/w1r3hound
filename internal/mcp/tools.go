@@ -62,34 +62,106 @@ var knownModuleSet = func() map[string]bool {
 
 // moduleCatalog is the JSON representation returned by list_modules.
 type moduleCatalogEntry struct {
-	Name     string `json:"name"`
-	Category string `json:"category"`
-	Desc     string `json:"description"`
-	Active   bool   `json:"active_probing"`
+	Name      string `json:"name"`
+	Category  string `json:"category"`
+	Desc      string `json:"description"`
+	Active    bool   `json:"active_probing"`
+	WhenToUse string `json:"when_to_use"`
 }
 
 var moduleCatalog = []moduleCatalogEntry{
-	{"whois", "Passive OSINT", "WHOIS/RDAP domain intelligence", false},
-	{"asnmap", "Passive OSINT", "ASN / CIDR range discovery via BGP", false},
-	{"passivesrc", "Passive OSINT", "Passive subdomains (CT logs, 6 sources)", false},
-	{"dns", "DNS & Subdomains", "DNS enum, AXFR, SRV, SPF/DMARC, takeover", false},
-	{"wayback", "DNS & Subdomains", "Wayback Machine URL & parameter harvesting", false},
-	{"permute", "DNS & Subdomains", "Subdomain permutation & resolution", true},
-	{"httprobe", "Live Detection", "HTTP probe + favicon hash (Shodan pivoting)", true},
-	{"webserver", "Fingerprinting", "Server fingerprint, TLS cert, HTTP methods", true},
-	{"metafiles", "Fingerprinting", "robots.txt, sitemap, security.txt, .well-known", true},
-	{"headers", "Fingerprinting", "Security headers audit, tech fingerprinting", true},
-	{"content", "Fingerprinting", "HTML comments, JS secrets, source maps, leaks", true},
-	{"portscan", "Attack Surface", "TCP port scan with service ID & banner grab", true},
-	{"cors", "Attack Surface", "CORS misconfiguration testing", true},
-	{"cloud", "Attack Surface", "S3/Azure/GCS/Firebase/DigitalOcean buckets", true},
-	{"dirbrute", "Attack Surface", "Hidden paths, admin panels, backups, configs", true},
-	{"apiscan", "Attack Surface", "GraphQL introspection, Swagger/OpenAPI, REST, WS", true},
-	{"saasenum", "Attack Surface", "SaaS enum (Zendesk/JIRA/Okta/Salesforce +15)", true},
-	{"crawler", "Attack Surface", "Web crawl for forms, params, entry points", true},
-	{"jsdeep", "Deep Analysis", "JS endpoint extraction (LinkFinder style)", true},
-	{"endprobe", "Deep Analysis", "Unauthenticated access on JS-discovered endpoints", true},
-	{"takeover", "Deep Analysis", "Subdomain takeover via HTTP fingerprints (37 services)", true},
+	{"whois", "Passive OSINT", "WHOIS/RDAP domain intelligence", false,
+		"Identify registrant, registrar, nameservers and creation/expiry dates. First step in any recon."},
+	{"asnmap", "Passive OSINT", "ASN / CIDR range discovery via BGP", false,
+		"Map the target's IP space and find adjacent assets sharing the same ASN."},
+	{"passivesrc", "Passive OSINT", "Passive subdomains (CT logs, 6 sources)", false,
+		"Discover subdomains without touching the target. Safe for stealthy recon or when probing is not yet authorized."},
+	{"dns", "DNS & Subdomains", "DNS enum, AXFR, SRV, SPF/DMARC, takeover", false,
+		"Comprehensive DNS enumeration. Run early — discovered subdomains feed into later active modules."},
+	{"wayback", "DNS & Subdomains", "Wayback Machine URL & parameter harvesting", false,
+		"Mine historical URLs and parameters for hidden endpoints, old admin panels and forgotten API routes."},
+	{"permute", "DNS & Subdomains", "Subdomain permutation & resolution", true,
+		"Generate subdomain permutations from discovered names. Best after passivesrc/dns have built a base list."},
+	{"httprobe", "Live Detection", "HTTP probe + favicon hash (Shodan pivoting)", true,
+		"Check which discovered subdomains actually resolve and serve HTTP. Favicon hash enables Shodan pivoting."},
+	{"webserver", "Fingerprinting", "Server fingerprint, TLS cert, HTTP methods", true,
+		"Identify web server software, TLS configuration and allowed HTTP methods for targeted attacks."},
+	{"metafiles", "Fingerprinting", "robots.txt, sitemap, security.txt, .well-known", true,
+		"Check publicly exposed meta files for hidden paths, disclosure policies and API documentation."},
+	{"headers", "Fingerprinting", "Security headers audit, tech fingerprinting", true,
+		"Audit security headers (CSP, HSTS, X-Frame-Options) and fingerprint technologies from response headers."},
+	{"content", "Fingerprinting", "HTML comments, JS secrets, source maps, leaks", true,
+		"Scan page source for leaked secrets, API keys in JS, HTML comments with internal info, source maps."},
+	{"portscan", "Attack Surface", "TCP port scan with service ID & banner grab", true,
+		"Discover open ports and running services. Use with -ports flag (top100, 1-1024, full)."},
+	{"cors", "Attack Surface", "CORS misconfiguration testing", true,
+		"Test for exploitable CORS misconfigurations that could allow cross-origin data theft."},
+	{"cloud", "Attack Surface", "S3/Azure/GCS/Firebase/DigitalOcean buckets", true,
+		"Enumerate cloud storage buckets associated with the target domain for public access or misconfigurations."},
+	{"dirbrute", "Attack Surface", "Hidden paths, admin panels, backups, configs", true,
+		"Brute-force directories and files for admin panels, backups, config files. Use -dir-wordlist for custom lists."},
+	{"apiscan", "Attack Surface", "GraphQL introspection, Swagger/OpenAPI, REST, WS", true,
+		"Detect exposed API documentation, GraphQL introspection, WebSocket endpoints and REST API patterns."},
+	{"saasenum", "Attack Surface", "SaaS enum (Zendesk/JIRA/Okta/Salesforce +15)", true,
+		"Enumerate third-party SaaS platforms associated with the target for misconfigurations and data exposure."},
+	{"crawler", "Attack Surface", "Web crawl for forms, params, entry points", true,
+		"Crawl the web application to discover forms, URL parameters and entry points for further testing."},
+	{"jsdeep", "Deep Analysis", "JS endpoint extraction (LinkFinder style)", true,
+		"Extract API endpoints, paths and secrets from JavaScript files. Best after content/crawler."},
+	{"endprobe", "Deep Analysis", "Unauthenticated access on JS-discovered endpoints", true,
+		"Test JS-discovered endpoints for unauthenticated access. Runs after jsdeep."},
+	{"takeover", "Deep Analysis", "Subdomain takeover via HTTP fingerprints (37 services)", true,
+		"Check dangling DNS records for subdomain takeover across 37 service providers."},
+}
+
+// suggestMap maps keywords/objectives to recommended module sets.
+var suggestMap = []struct {
+	keywords []string
+	modules  []string
+	desc     string
+}{
+	{[]string{"passive", "osint", "stealth", "safe", "no-touch"},
+		[]string{"whois", "asnmap", "passivesrc", "dns", "wayback"},
+		"Passive-only recon: no traffic to the target"},
+	{[]string{"subdomain", "subdomains", "dns", "enumerate"},
+		[]string{"passivesrc", "dns", "wayback", "permute", "httprobe", "takeover"},
+		"Subdomain discovery and validation"},
+	{[]string{"web", "webapp", "website", "http", "fingerprint"},
+		[]string{"webserver", "metafiles", "headers", "content", "cors", "dirbrute", "crawler"},
+		"Web application fingerprinting and analysis"},
+	{[]string{"vuln", "vulnerability", "vulnerabilities", "exploit", "attack"},
+		[]string{"headers", "cors", "cloud", "apiscan", "takeover", "content", "endprobe"},
+		"Vulnerability-focused assessment"},
+	{[]string{"api", "graphql", "swagger", "openapi", "rest", "websocket"},
+		[]string{"apiscan", "jsdeep", "endprobe", "content"},
+		"API endpoint discovery and analysis"},
+	{[]string{"cloud", "bucket", "s3", "azure", "gcs", "storage"},
+		[]string{"cloud", "dns", "passivesrc"},
+		"Cloud storage bucket enumeration"},
+	{[]string{"port", "ports", "service", "services", "network", "tcp"},
+		[]string{"portscan", "webserver"},
+		"Port scanning and service identification"},
+	{[]string{"js", "javascript", "secret", "key", "leak", "credential"},
+		[]string{"content", "jsdeep", "endprobe"},
+		"JavaScript analysis and secret discovery"},
+	{[]string{"directory", "dir", "path", "admin", "backup", "brute"},
+		[]string{"dirbrute", "metafiles", "crawler"},
+		"Directory and file brute-forcing"},
+	{[]string{"takeover", "dangling", "cname"},
+		[]string{"dns", "passivesrc", "takeover"},
+		"Subdomain takeover assessment"},
+	{[]string{"full", "comprehensive", "everything", "complete", "all"},
+		nil,
+		"Full recon: all modules (may take several minutes)"},
+	{[]string{"bbp", "bug bounty", "bounty", "hackerone", "bugcrowd"},
+		[]string{"passivesrc", "dns", "wayback", "headers", "cors", "cloud", "apiscan", "content", "jsdeep", "endprobe", "takeover"},
+		"Bug bounty recon: high-signal modules for rapid assessment"},
+	{[]string{"saas", "third-party", "vendor", "zendesk", "jira", "okta"},
+		[]string{"saasenum", "dns", "passivesrc"},
+		"SaaS and third-party service enumeration"},
+	{[]string{"crawl", "spider", "form", "parameter", "param"},
+		[]string{"crawler", "wayback", "content"},
+		"Web crawling for forms and parameters"},
 }
 
 // toolDefinitions returns the MCP tool list for tools/list.
@@ -97,7 +169,29 @@ func toolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "list_modules",
-			"description": "List all available w1r3hound recon modules with their categories and descriptions. Use this to discover what modules are available before running a scan.",
+			"description": "List all available w1r3hound recon modules with their categories, descriptions and usage hints. Use this to discover what modules are available before running a scan.",
+			"inputSchema": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		{
+			"name":        "suggest_modules",
+			"description": "Given a recon objective or task description, return the recommended modules to run. Use this when you know what you want to achieve but not which specific modules to select.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"objective": map[string]any{
+						"type":        "string",
+						"description": "What you want to accomplish (e.g. 'find subdomains', 'check for vulnerabilities', 'passive recon only', 'full bug bounty assessment').",
+					},
+				},
+				"required": []string{"objective"},
+			},
+		},
+		{
+			"name":        "server_info",
+			"description": "Return server version, capabilities and available module count. Use this to verify the MCP server is operational and check its configuration.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -105,7 +199,7 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "scan",
-			"description": "Run w1r3hound recon modules against a target. Returns structured findings aligned to the OWASP WSTG framework with severity ratings (CRITICAL/HIGH/MEDIUM/LOW/INFO). Select specific modules for focused fast results, or omit modules to run all (may take several minutes).",
+			"description": "Run w1r3hound recon modules against a target. Returns structured findings aligned to the OWASP WSTG framework with severity ratings (CRITICAL/HIGH/MEDIUM/LOW/INFO). Select specific modules for focused fast results, or omit modules to run all (may take several minutes). Progress notifications are sent as each module completes.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -119,6 +213,18 @@ func toolDefinitions() []map[string]any {
 					"max_duration_seconds": map[string]any{"type": "integer", "description": "Overall scan timeout in seconds (default 300, max 600)"},
 					"allow_private":        map[string]any{"type": "boolean", "description": "Allow scanning private/internal IPs (default false — SSRF guard)"},
 					"verbose":              map[string]any{"type": "boolean", "description": "Include debug-level output"},
+					"user_agent":           map[string]any{"type": "string", "description": "Custom User-Agent string for HTTP requests"},
+					"headers":              map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "Custom HTTP headers as key-value pairs (e.g. {\"X-Bug-Bounty\": \"HackerOne/username\", \"Authorization\": \"Bearer token\"})"},
+					"wordlist":             map[string]any{"type": "string", "description": "Path to a subdomain wordlist file for brute-force enumeration"},
+					"dir_wordlist":         map[string]any{"type": "string", "description": "Path to a directory/file bruteforce wordlist (default: embedded list)"},
+					"dir_extensions":       map[string]any{"type": "string", "description": "Comma-separated extensions for dirbrute (e.g. '.bak,.php,.zip,~')"},
+					"skip_tls_verify":      map[string]any{"type": "boolean", "description": "Skip TLS certificate verification (default true — recon targets often have broken/self-signed TLS)"},
+					"resolver":             map[string]any{"type": "string", "description": "Custom DNS resolver IP or ip:port (e.g. '1.1.1.1', '8.8.8.8:53')"},
+					"resolvers":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "List of DNS resolver IPs (ip or ip:port). Enables the raw-UDP brute-force engine rotating across the list. Alternative to passing a file path — the agent provides the list directly."},
+					"wayback_limit":        map[string]any{"type": "integer", "description": "Max URLs to pull from the Wayback CDX API (default 5000)"},
+					"crawl_pages":          map[string]any{"type": "integer", "description": "Max pages for the crawler (default 100)"},
+					"js_files":             map[string]any{"type": "integer", "description": "Max JavaScript files to analyse (default 50)"},
+					"min_severity":         map[string]any{"type": "string", "enum": []string{"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}, "description": "Minimum severity to include in results (default: all)"},
 				},
 				"required": []string{"target"},
 			},
@@ -128,12 +234,16 @@ func toolDefinitions() []map[string]any {
 
 // executeTool dispatches a tool call by name and returns the result text and
 // whether the result represents an error.
-func executeTool(name string, argsRaw json.RawMessage) (text string, isErr bool) {
+func executeTool(name string, argsRaw json.RawMessage, srv *Server) (text string, isErr bool) {
 	switch name {
 	case "list_modules":
 		return executeListModules()
+	case "suggest_modules":
+		return executeSuggestModules(argsRaw)
+	case "server_info":
+		return executeServerInfo(srv)
 	case "scan":
-		return executeScan(argsRaw)
+		return executeScan(argsRaw, srv)
 	default:
 		return fmt.Sprintf("unknown tool: %q", name), true
 	}
@@ -144,20 +254,124 @@ func executeListModules() (string, bool) {
 	return string(data), false
 }
 
-type scanParams struct {
-	Target             string   `json:"target"`
-	Modules            []string `json:"modules"`
-	Passive            bool     `json:"passive"`
-	Concurrency        int      `json:"concurrency"`
-	TimeoutSeconds     int      `json:"timeout_seconds"`
-	Ports              string   `json:"ports"`
-	RateLimit          int      `json:"rate_limit"`
-	MaxDurationSeconds int      `json:"max_duration_seconds"`
-	AllowPrivate       bool     `json:"allow_private"`
-	Verbose            bool     `json:"verbose"`
+func executeSuggestModules(argsRaw json.RawMessage) (string, bool) {
+	var params struct {
+		Objective string `json:"objective"`
+	}
+	if len(argsRaw) > 0 {
+		if err := json.Unmarshal(argsRaw, &params); err != nil {
+			return "invalid arguments: " + err.Error(), true
+		}
+	}
+	if params.Objective == "" {
+		return "objective is required", true
+	}
+
+	obj := strings.ToLower(params.Objective)
+	type match struct {
+		Modules []string `json:"modules"`
+		Desc    string   `json:"description"`
+		Score   int      `json:"match_score"`
+	}
+	var matches []match
+	for _, sm := range suggestMap {
+		score := 0
+		for _, kw := range sm.keywords {
+			if strings.Contains(obj, kw) {
+				score++
+			}
+		}
+		if score > 0 {
+			mods := sm.modules
+			if mods == nil {
+				mods = make([]string, 0, len(moduleRegistry))
+				for _, e := range moduleRegistry {
+					mods = append(mods, e.Name)
+				}
+			}
+			matches = append(matches, match{Modules: mods, Desc: sm.desc, Score: score})
+		}
+	}
+
+	if len(matches) == 0 {
+		result := map[string]any{
+			"suggestion": "No specific match found. Here are common starting points:",
+			"options": []map[string]any{
+				{"objective": "passive recon", "modules": []string{"whois", "asnmap", "passivesrc", "dns", "wayback"}},
+				{"objective": "web assessment", "modules": []string{"webserver", "headers", "content", "cors", "dirbrute"}},
+				{"objective": "full scan", "modules": "omit the modules parameter to run all"},
+			},
+		}
+		data, _ := json.MarshalIndent(result, "", "  ")
+		return string(data), false
+	}
+
+	// Return the best match (highest score)
+	best := matches[0]
+	for _, m := range matches[1:] {
+		if m.Score > best.Score {
+			best = m
+		}
+	}
+	result := map[string]any{
+		"recommended_modules": best.Modules,
+		"description":         best.Desc,
+		"usage":               fmt.Sprintf("Run scan with modules: %s", strings.Join(best.Modules, ", ")),
+	}
+	data, _ := json.MarshalIndent(result, "", "  ")
+	return string(data), false
 }
 
-func executeScan(argsRaw json.RawMessage) (string, bool) {
+func executeServerInfo(srv *Server) (string, bool) {
+	ver := ""
+	if srv != nil {
+		ver = srv.version
+	}
+	info := map[string]any{
+		"name":            "w1r3hound",
+		"version":         ver,
+		"protocol":        "2025-06-18",
+		"total_modules":   len(moduleRegistry),
+		"tools":           []string{"list_modules", "suggest_modules", "server_info", "scan"},
+		"ssrf_guard":      "enabled by default (set allow_private=true to override)",
+		"scan_timeout":    "default 300s, max 600s",
+		"progress":        "notifications/progress sent per module during scan",
+		"findings_format": "OWASP WSTG aligned, severity: CRITICAL/HIGH/MEDIUM/LOW/INFO",
+	}
+	data, _ := json.MarshalIndent(info, "", "  ")
+	return string(data), false
+}
+
+type scanParams struct {
+	Target             string            `json:"target"`
+	Modules            []string          `json:"modules"`
+	Passive            bool              `json:"passive"`
+	Concurrency        int               `json:"concurrency"`
+	TimeoutSeconds     int               `json:"timeout_seconds"`
+	Ports              string            `json:"ports"`
+	RateLimit          int               `json:"rate_limit"`
+	MaxDurationSeconds int               `json:"max_duration_seconds"`
+	AllowPrivate       bool              `json:"allow_private"`
+	Verbose            bool              `json:"verbose"`
+	UserAgent          string            `json:"user_agent"`
+	Headers            map[string]string `json:"headers"`
+	Wordlist           string            `json:"wordlist"`
+	DirWordlist        string            `json:"dir_wordlist"`
+	DirExtensions      string            `json:"dir_extensions"`
+	SkipTLSVerify      *bool             `json:"skip_tls_verify"`
+	Resolver           string            `json:"resolver"`
+	Resolvers          []string          `json:"resolvers"`
+	WaybackLimit       int               `json:"wayback_limit"`
+	CrawlPages         int               `json:"crawl_pages"`
+	JSFiles            int               `json:"js_files"`
+	MinSeverity        string            `json:"min_severity"`
+}
+
+var severityOrder = map[string]int{
+	"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4,
+}
+
+func executeScan(argsRaw json.RawMessage, srv *Server) (string, bool) {
 	var p scanParams
 	if len(argsRaw) > 0 {
 		if err := json.Unmarshal(argsRaw, &p); err != nil {
@@ -180,6 +394,38 @@ func executeScan(argsRaw json.RawMessage) (string, bool) {
 				return fmt.Sprintf("unknown module: %q — use list_modules to see available names", m), true
 			}
 			selected[m] = true
+		}
+	}
+
+	// Validate min_severity.
+	minSev := -1
+	if p.MinSeverity != "" {
+		sev, ok := severityOrder[strings.ToUpper(p.MinSeverity)]
+		if !ok {
+			return fmt.Sprintf("invalid min_severity: %q — must be INFO, LOW, MEDIUM, HIGH or CRITICAL", p.MinSeverity), true
+		}
+		minSev = sev
+	}
+
+	// Validate headers.
+	if len(p.Headers) > 32 {
+		return "too many headers (max 32)", true
+	}
+	for name, value := range p.Headers {
+		if strings.ContainsAny(name, " \t\r\n\x00") || strings.ContainsAny(value, "\r\n\x00") {
+			return fmt.Sprintf("invalid header %q: must not contain control characters", name), true
+		}
+	}
+
+	// Validate resolver(s).
+	if p.Resolver != "" {
+		if !validResolver(p.Resolver) {
+			return "invalid resolver: must be a bare IP or ip:port (e.g. '1.1.1.1' or '8.8.8.8:53')", true
+		}
+	}
+	for i, r := range p.Resolvers {
+		if !validResolver(r) {
+			return fmt.Sprintf("invalid resolver at index %d: %q — must be a bare IP or ip:port", i, r), true
 		}
 	}
 
@@ -206,6 +452,41 @@ func executeScan(argsRaw json.RawMessage) (string, bool) {
 		defer cfg.RL.Stop()
 	}
 
+	// Apply new parameters.
+	if p.UserAgent != "" {
+		cfg.UserAgent = p.UserAgent
+	}
+	if len(p.Headers) > 0 {
+		cfg.RequestHeaders = p.Headers
+	}
+	if p.Wordlist != "" {
+		cfg.Wordlist = p.Wordlist
+	}
+	if p.DirWordlist != "" {
+		cfg.DirWordlist = p.DirWordlist
+	}
+	if p.DirExtensions != "" {
+		cfg.DirExtensions = p.DirExtensions
+	}
+	if p.SkipTLSVerify != nil {
+		cfg.SkipSSLCheck = *p.SkipTLSVerify
+	}
+	if p.Resolver != "" {
+		cfg.Resolver = core.NewResolver(p.Resolver, cfg.Timeout)
+	}
+	if len(p.Resolvers) > 0 {
+		cfg.Resolvers = p.Resolvers
+	}
+	if p.WaybackLimit > 0 && p.WaybackLimit <= 100000 {
+		cfg.WaybackLimit = p.WaybackLimit
+	}
+	if p.CrawlPages > 0 && p.CrawlPages <= 5000 {
+		cfg.CrawlMaxPages = p.CrawlPages
+	}
+	if p.JSFiles > 0 && p.JSFiles <= 2000 {
+		cfg.MaxJSFiles = p.JSFiles
+	}
+
 	// Overall scan timeout (default 5 min, max 10 min).
 	maxDur := 300 * time.Second
 	if p.MaxDurationSeconds > 0 && p.MaxDurationSeconds <= 600 {
@@ -215,8 +496,10 @@ func executeScan(argsRaw json.RawMessage) (string, bool) {
 	defer scanCancel()
 	cfg.SetContext(scanCtx, scanCancel)
 
-	// Set up resolver.
-	cfg.Resolver = core.NewResolver("", cfg.Timeout)
+	// Set up resolver (only if not already set by custom resolver above).
+	if p.Resolver == "" {
+		cfg.Resolver = core.NewResolver("", cfg.Timeout)
+	}
 
 	// Detect scheme before normalizing — matches CLI flow.
 	cfg.Target = detectScheme(p.Target, cfg)
@@ -234,7 +517,8 @@ func executeScan(argsRaw json.RawMessage) (string, bool) {
 		return true
 	}
 
-	// Execute modules in phase order.
+	// Count modules to run for progress tracking.
+	total := 0
 	for _, mod := range moduleRegistry {
 		if !shouldRun(mod.Name) {
 			continue
@@ -242,18 +526,64 @@ func executeScan(argsRaw json.RawMessage) (string, bool) {
 		if cfg.Passive && mod.Active {
 			continue
 		}
+		total++
+	}
+
+	// Execute modules in phase order with progress notifications.
+	progress := 0
+	for _, mod := range moduleRegistry {
+		if !shouldRun(mod.Name) {
+			continue
+		}
+		if cfg.Passive && mod.Active {
+			continue
+		}
+		if srv != nil {
+			srv.notify("notifications/progress", map[string]any{
+				"progress": progress,
+				"total":    total + 1, // +1 for the surface summary
+				"message":  fmt.Sprintf("starting module: %s", mod.Name),
+			})
+		}
 		safeRun(log, mod.Name, func() {
 			mod.Fn(cfg, report, log)
 		})
+		progress++
+		if srv != nil {
+			snap := report.Snapshot()
+			srv.notify("notifications/progress", map[string]any{
+				"progress": progress,
+				"total":    total + 1,
+				"message":  fmt.Sprintf("completed: %s (%d findings so far)", mod.Name, len(snap.Findings)),
+			})
+		}
 	}
 
 	// Always run surface summary.
+	if srv != nil {
+		srv.notify("notifications/progress", map[string]any{
+			"progress": progress,
+			"total":    total + 1,
+			"message":  "running surface summary",
+		})
+	}
 	safeRun(log, "surface", func() {
 		modules.RunSurfaceSummary(cfg, report, log)
 	})
 
 	report.Finalize()
 	snap := report.Snapshot()
+
+	// Apply severity filter if requested.
+	if minSev > 0 {
+		filtered := make([]core.Finding, 0, len(snap.Findings))
+		for _, f := range snap.Findings {
+			if severityOrder[string(f.Severity)] >= minSev {
+				filtered = append(filtered, f)
+			}
+		}
+		snap.Findings = filtered
+	}
 
 	result := map[string]any{
 		"report":  snap,
@@ -375,4 +705,27 @@ func validateTarget(raw string) error {
 		return nil
 	}
 	return fmt.Errorf("invalid target: must be a hostname, IP, CIDR or http(s) URL")
+}
+
+// validResolver accepts a bare IP (v4/v6) or an ip:port.
+func validResolver(s string) bool {
+	if s == "" || strings.ContainsAny(s, " \t\r\n\x00") {
+		return false
+	}
+	if ip := net.ParseIP(s); ip != nil {
+		return true
+	}
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		return false
+	}
+	if net.ParseIP(host) == nil {
+		return false
+	}
+	for _, c := range port {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(port) > 0
 }
