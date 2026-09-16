@@ -306,15 +306,18 @@ func TestScanSuccessful(t *testing.T) {
 		"max_duration_seconds": 30,
 		"allow_private":        true,
 	})
-	text, isErr := executeScan(args, nil)
-	if isErr {
-		t.Fatalf("scan returned error: %s", text)
+	tr := executeScan(args, nil)
+	if tr.IsError {
+		t.Fatalf("scan returned error: %s", tr.Text)
 	}
-	if !strings.Contains(text, "report") {
+	if !strings.Contains(tr.Text, "report") {
 		t.Error("response missing report key")
 	}
-	if !strings.Contains(text, "summary") {
+	if !strings.Contains(tr.Text, "summary") {
 		t.Error("response missing summary key")
+	}
+	if tr.StructuredContent == nil {
+		t.Error("expected structuredContent for scan results")
 	}
 }
 
@@ -339,8 +342,8 @@ func TestScanWithHeaders(t *testing.T) {
 		"user_agent":           "w1r3hound-test/1.0",
 		"headers":              map[string]string{"X-Bug-Bounty": "HackerOne/tester"},
 	})
-	_, isErr := executeScan(args, nil)
-	if isErr {
+	tr := executeScan(args, nil)
+	if tr.IsError {
 		t.Skip("scan returned error (network-dependent)")
 	}
 	if gotUA != "" && gotUA != "w1r3hound-test/1.0" {
@@ -357,8 +360,8 @@ func TestScanMinSeverityValidation(t *testing.T) {
 		"target":       "example.com",
 		"min_severity": "INVALID",
 	})
-	_, isErr := executeScan(args, nil)
-	if !isErr {
+	tr := executeScan(args, nil)
+	if !tr.IsError {
 		t.Error("expected error for invalid min_severity")
 	}
 }
@@ -370,9 +373,9 @@ func TestScanHeaderInjection(t *testing.T) {
 		"target":  "example.com",
 		"headers": map[string]string{"Evil\r\nHeader": "value"},
 	})
-	text, isErr := executeScan(args, nil)
-	if !isErr {
-		t.Errorf("expected error for header with CRLF, got: %s", text)
+	tr := executeScan(args, nil)
+	if !tr.IsError {
+		t.Errorf("expected error for header with CRLF, got: %s", tr.Text)
 	}
 }
 
@@ -383,9 +386,9 @@ func TestScanInvalidResolver(t *testing.T) {
 		"target":   "example.com",
 		"resolver": "not.a.valid.resolver",
 	})
-	text, isErr := executeScan(args, nil)
-	if !isErr {
-		t.Errorf("expected error for invalid resolver, got: %s", text)
+	tr := executeScan(args, nil)
+	if !tr.IsError {
+		t.Errorf("expected error for invalid resolver, got: %s", tr.Text)
 	}
 }
 
@@ -394,12 +397,12 @@ func TestScanInvalidResolversEntry(t *testing.T) {
 		"target":    "example.com",
 		"resolvers": []string{"1.1.1.1", "bad.hostname"},
 	})
-	text, isErr := executeScan(args, nil)
-	if !isErr {
-		t.Errorf("expected error for invalid resolver in list, got: %s", text)
+	tr := executeScan(args, nil)
+	if !tr.IsError {
+		t.Errorf("expected error for invalid resolver in list, got: %s", tr.Text)
 	}
-	if !strings.Contains(text, "index 1") {
-		t.Errorf("error should mention the index, got: %s", text)
+	if !strings.Contains(tr.Text, "index 1") {
+		t.Errorf("error should mention the index, got: %s", tr.Text)
 	}
 }
 
@@ -414,8 +417,8 @@ func TestScanValidResolvers(t *testing.T) {
 		"modules":   []string{"headers"},
 		"resolvers": []string{"1.1.1.1", "8.8.8.8:53"},
 	})
-	_, isErr := executeScan(args, nil)
-	if isErr {
+	tr := executeScan(args, nil)
+	if tr.IsError {
 		t.Error("valid resolvers list should not cause an error")
 	}
 }
@@ -437,7 +440,7 @@ func TestRateLimiterCleanup(t *testing.T) {
 		"max_duration_seconds": 15,
 		"allow_private":        true,
 	})
-	_, _ = executeScan(args, nil)
+	_ = executeScan(args, nil)
 	runtime.GC()
 	time.Sleep(100 * time.Millisecond)
 	after := runtime.NumGoroutine()
@@ -456,11 +459,11 @@ func TestSSRFBlocked(t *testing.T) {
 		"timeout_seconds":      3,
 		"max_duration_seconds": 10,
 	})
-	text, isErr := executeScan(args, nil)
-	if isErr {
+	tr := executeScan(args, nil)
+	if tr.IsError {
 		return
 	}
-	_ = text
+	_ = tr.Text
 }
 
 func TestSSRFAllowedWithFlag(t *testing.T) {
@@ -477,9 +480,9 @@ func TestSSRFAllowedWithFlag(t *testing.T) {
 		"timeout_seconds":      3,
 		"max_duration_seconds": 15,
 	})
-	text, isErr := executeScan(args, nil)
-	if isErr {
-		t.Fatalf("scan with allow_private should succeed: %s", text)
+	tr := executeScan(args, nil)
+	if tr.IsError {
+		t.Fatalf("scan with allow_private should succeed: %s", tr.Text)
 	}
 }
 
@@ -505,7 +508,7 @@ func TestScanTimeout(t *testing.T) {
 		"max_duration_seconds": 2,
 		"allow_private":        true,
 	})
-	_, _ = executeScan(args, nil)
+	_ = executeScan(args, nil)
 	elapsed := time.Since(start)
 
 	if elapsed > 10*time.Second {
@@ -539,7 +542,7 @@ func TestScanProgressNotifications(t *testing.T) {
 		"max_duration_seconds": 15,
 		"allow_private":        true,
 	})
-	_, _ = executeScan(args, tc)
+	_ = executeScan(args, tc)
 
 	notifications := out.String()
 	if !strings.Contains(notifications, "notifications/progress") {
@@ -562,43 +565,207 @@ func TestScanProgressNotifications(t *testing.T) {
 // ── executeTool dispatch ──
 
 func TestExecuteTool_UnknownTool(t *testing.T) {
-	text, isErr := executeTool("nonexistent", nil, nil)
-	if !isErr {
+	tr := executeTool("nonexistent", nil, nil)
+	if !tr.IsError {
 		t.Error("expected error for unknown tool")
 	}
-	if !strings.Contains(text, "unknown tool") {
-		t.Errorf("expected 'unknown tool' message, got: %s", text)
+	if !strings.Contains(tr.Text, "unknown tool") {
+		t.Errorf("expected 'unknown tool' message, got: %s", tr.Text)
 	}
 }
 
 func TestExecuteTool_ListModules(t *testing.T) {
-	text, isErr := executeTool("list_modules", nil, nil)
-	if isErr {
-		t.Fatalf("unexpected error: %s", text)
+	tr := executeTool("list_modules", nil, nil)
+	if tr.IsError {
+		t.Fatalf("unexpected error: %s", tr.Text)
 	}
-	if !strings.Contains(text, "when_to_use") {
+	if !strings.Contains(tr.Text, "when_to_use") {
 		t.Error("expected when_to_use field in module catalog")
 	}
 }
 
 func TestExecuteTool_SuggestModules(t *testing.T) {
 	args, _ := json.Marshal(map[string]string{"objective": "find subdomains"})
-	text, isErr := executeTool("suggest_modules", args, nil)
-	if isErr {
-		t.Fatalf("unexpected error: %s", text)
+	tr := executeTool("suggest_modules", args, nil)
+	if tr.IsError {
+		t.Fatalf("unexpected error: %s", tr.Text)
 	}
-	if !strings.Contains(text, "recommended_modules") {
+	if !strings.Contains(tr.Text, "recommended_modules") {
 		t.Error("expected recommended_modules in result")
 	}
 }
 
 func TestExecuteTool_ServerInfo(t *testing.T) {
 	tc := &toolCall{srv: &Server{version: "2.1"}}
-	text, isErr := executeTool("server_info", nil, tc)
-	if isErr {
-		t.Fatalf("unexpected error: %s", text)
+	tr := executeTool("server_info", nil, tc)
+	if tr.IsError {
+		t.Fatalf("unexpected error: %s", tr.Text)
 	}
-	if !strings.Contains(text, "2.1") {
+	if !strings.Contains(tr.Text, "2.1") {
 		t.Error("expected version in server info")
+	}
+}
+
+// ── Structured content ──
+
+func TestScanOutputSchema(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	resp := unmarshalResponse(t, raw)
+	result, _ := resp.Result.(map[string]any)
+	tools, _ := result["tools"].([]any)
+	for _, tool := range tools {
+		tm, _ := tool.(map[string]any)
+		if tm["name"] == "scan" {
+			schema, ok := tm["outputSchema"].(map[string]any)
+			if !ok {
+				t.Fatal("scan tool missing outputSchema")
+			}
+			props, _ := schema["properties"].(map[string]any)
+			for _, key := range []string{"report", "log", "summary"} {
+				if _, ok := props[key]; !ok {
+					t.Errorf("outputSchema missing property %q", key)
+				}
+			}
+			return
+		}
+	}
+	t.Error("scan tool not found")
+}
+
+func TestScanStructuredContent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	args, _ := json.Marshal(map[string]any{
+		"target":               srv.URL,
+		"modules":              []string{"headers"},
+		"timeout_seconds":      5,
+		"max_duration_seconds": 15,
+		"allow_private":        true,
+	})
+	tr := executeScan(args, nil)
+	if tr.IsError {
+		t.Fatalf("scan error: %s", tr.Text)
+	}
+	if tr.StructuredContent == nil {
+		t.Fatal("expected non-nil structuredContent")
+	}
+	sc, ok := tr.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatal("structuredContent is not a map")
+	}
+	if _, ok := sc["report"]; !ok {
+		t.Error("structuredContent missing report")
+	}
+	if _, ok := sc["summary"]; !ok {
+		t.Error("structuredContent missing summary")
+	}
+	if _, ok := sc["log"]; !ok {
+		t.Error("structuredContent missing log")
+	}
+}
+
+func TestDiscoverMethod(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error != nil {
+		t.Fatalf("server/discover returned error: %v", resp.Error)
+	}
+	result, _ := resp.Result.(map[string]any)
+	if result["resultType"] != "complete" {
+		t.Error("discover response missing resultType: complete")
+	}
+	versions, ok := result["supportedVersions"].([]any)
+	if !ok || len(versions) == 0 {
+		t.Error("discover response missing supportedVersions")
+	}
+	caps, ok := result["capabilities"].(map[string]any)
+	if !ok {
+		t.Error("discover response missing capabilities")
+	}
+	if _, ok := caps["tools"]; !ok {
+		t.Error("capabilities missing tools")
+	}
+}
+
+// ── buildPrompt ──
+
+func TestBuildPrompt_Known(t *testing.T) {
+	cases := []string{"bug_bounty_recon", "passive_recon", "subdomain_takeover_check", "full_recon", "web_assessment"}
+	for _, name := range cases {
+		msgs, ok := buildPrompt(name, map[string]string{"target": "example.com"})
+		if !ok {
+			t.Errorf("buildPrompt(%q) returned not-ok", name)
+			continue
+		}
+		if len(msgs) == 0 {
+			t.Errorf("buildPrompt(%q) returned empty messages", name)
+		}
+	}
+}
+
+func TestBuildPrompt_Unknown(t *testing.T) {
+	_, ok := buildPrompt("nonexistent", nil)
+	if ok {
+		t.Error("expected not-ok for unknown prompt")
+	}
+}
+
+func TestBuildPrompt_PassiveFlag(t *testing.T) {
+	msgs, ok := buildPrompt("passive_recon", map[string]string{"target": "test.com"})
+	if !ok {
+		t.Fatal("passive_recon should be known")
+	}
+	content, _ := msgs[0]["content"].(map[string]any)
+	text, _ := content["text"].(string)
+	if !strings.Contains(text, `"passive": true`) {
+		t.Error("passive_recon should include passive flag in scan args")
+	}
+}
+
+// ── completeArgument ──
+
+func TestCompleteArgument_Modules(t *testing.T) {
+	values := completeArgument("ref/tool", "scan", "modules", "dns")
+	if len(values) != 1 || values[0] != "dns" {
+		t.Errorf("expected [dns], got %v", values)
+	}
+}
+
+func TestCompleteArgument_EmptyPrefix(t *testing.T) {
+	values := completeArgument("ref/tool", "scan", "modules", "")
+	if len(values) != len(moduleRegistry) {
+		t.Errorf("empty prefix should return all %d modules, got %d", len(moduleRegistry), len(values))
+	}
+}
+
+func TestCompleteArgument_NoMatch(t *testing.T) {
+	values := completeArgument("ref/tool", "scan", "modules", "zzz")
+	if len(values) != 0 {
+		t.Errorf("expected empty for no match, got %v", values)
+	}
+}
+
+func TestCompleteArgument_Ports(t *testing.T) {
+	values := completeArgument("ref/tool", "scan", "ports", "t")
+	if len(values) != 1 || values[0] != "top100" {
+		t.Errorf("expected [top100], got %v", values)
+	}
+}
+
+// ── filterPrefix ──
+
+func TestFilterPrefix(t *testing.T) {
+	items := []string{"alpha", "bravo", "alpha2"}
+	if got := filterPrefix(items, "al"); len(got) != 2 {
+		t.Errorf("expected 2 matches, got %v", got)
+	}
+	if got := filterPrefix(items, ""); len(got) != 3 {
+		t.Errorf("empty prefix should return all, got %v", got)
+	}
+	if got := filterPrefix(items, "z"); len(got) != 0 {
+		t.Errorf("expected no matches, got %v", got)
 	}
 }

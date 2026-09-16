@@ -622,3 +622,151 @@ func TestCancellationStopsScan(t *testing.T) {
 		t.Error("expected response for cancelled scan request")
 	}
 }
+
+// ── Prompts ──
+
+func TestPromptsList(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"prompts/list","params":{}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error != nil {
+		t.Fatalf("prompts/list error: %v", resp.Error)
+	}
+	result, _ := resp.Result.(map[string]any)
+	if result["resultType"] != "complete" {
+		t.Errorf("resultType = %v, want complete", result["resultType"])
+	}
+	prompts, ok := result["prompts"].([]any)
+	if !ok || len(prompts) < 3 {
+		t.Fatalf("expected at least 3 prompts, got %v", result["prompts"])
+	}
+	names := map[string]bool{}
+	for _, p := range prompts {
+		pm, _ := p.(map[string]any)
+		names[pm["name"].(string)] = true
+		if pm["description"] == nil || pm["description"] == "" {
+			t.Errorf("prompt %q missing description", pm["name"])
+		}
+		args, ok := pm["arguments"].([]any)
+		if !ok || len(args) == 0 {
+			t.Errorf("prompt %q missing arguments", pm["name"])
+		}
+	}
+	for _, want := range []string{"bug_bounty_recon", "passive_recon", "subdomain_takeover_check"} {
+		if !names[want] {
+			t.Errorf("missing prompt %q", want)
+		}
+	}
+}
+
+func TestPromptsGet(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"bug_bounty_recon","arguments":{"target":"example.com"}}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error != nil {
+		t.Fatalf("prompts/get error: %v", resp.Error)
+	}
+	result, _ := resp.Result.(map[string]any)
+	messages, ok := result["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		t.Fatal("prompts/get returned no messages")
+	}
+	msg, _ := messages[0].(map[string]any)
+	if msg["role"] != "user" {
+		t.Errorf("message role = %v, want user", msg["role"])
+	}
+	content, _ := msg["content"].(map[string]any)
+	text, _ := content["text"].(string)
+	if !strings.Contains(text, "example.com") {
+		t.Error("prompt message should contain the target")
+	}
+	if !strings.Contains(text, "scan") {
+		t.Error("prompt message should reference the scan tool")
+	}
+}
+
+func TestPromptsGetUnknown(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"nonexistent"}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error == nil {
+		t.Fatal("expected error for unknown prompt")
+	}
+	if resp.Error.Code != -32602 {
+		t.Errorf("error code = %d, want -32602", resp.Error.Code)
+	}
+}
+
+// ── Completions ──
+
+func TestCompletionModules(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"completion/complete","params":{"ref":{"type":"ref/tool","name":"scan"},"argument":{"name":"modules","value":"port"}}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error != nil {
+		t.Fatalf("completion/complete error: %v", resp.Error)
+	}
+	result, _ := resp.Result.(map[string]any)
+	completion, _ := result["completion"].(map[string]any)
+	values, ok := completion["values"].([]any)
+	if !ok || len(values) == 0 {
+		t.Fatal("expected completion values for 'port'")
+	}
+	found := false
+	for _, v := range values {
+		if v == "portscan" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'portscan' in completions, got %v", values)
+	}
+}
+
+func TestCompletionSeverity(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"completion/complete","params":{"ref":{"type":"ref/tool","name":"scan"},"argument":{"name":"min_severity","value":"H"}}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error != nil {
+		t.Fatalf("completion/complete error: %v", resp.Error)
+	}
+	result, _ := resp.Result.(map[string]any)
+	completion, _ := result["completion"].(map[string]any)
+	values, ok := completion["values"].([]any)
+	if !ok || len(values) == 0 {
+		t.Fatal("expected completion values for severity 'H'")
+	}
+	found := false
+	for _, v := range values {
+		if v == "HIGH" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'HIGH' in completions, got %v", values)
+	}
+}
+
+func TestCompletionEmpty(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"completion/complete","params":{"ref":{"type":"ref/tool","name":"scan"},"argument":{"name":"target","value":"exam"}}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error != nil {
+		t.Fatalf("completion/complete error: %v", resp.Error)
+	}
+	result, _ := resp.Result.(map[string]any)
+	completion, _ := result["completion"].(map[string]any)
+	values, _ := completion["values"].([]any)
+	if len(values) != 0 {
+		t.Errorf("expected empty completions for target, got %v", values)
+	}
+}
+
+// ── Capabilities advertised ──
+
+func TestCapabilitiesIncludePromptsAndCompletions(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+	resp := unmarshalResponse(t, raw)
+	result, _ := resp.Result.(map[string]any)
+	caps, _ := result["capabilities"].(map[string]any)
+	if _, ok := caps["prompts"]; !ok {
+		t.Error("capabilities.prompts missing")
+	}
+	if _, ok := caps["completions"]; !ok {
+		t.Error("capabilities.completions missing")
+	}
+}

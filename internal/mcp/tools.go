@@ -230,6 +230,7 @@ func toolDefinitions() []map[string]any {
 				"idempotentHint":  true,
 				"openWorldHint":   true,
 			},
+			"outputSchema": scanOutputSchema(),
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -262,20 +263,176 @@ func toolDefinitions() []map[string]any {
 	}
 }
 
-// executeTool dispatches a tool call by name and returns the result text and
-// whether the result represents an error.
-func executeTool(name string, argsRaw json.RawMessage, tc *toolCall) (text string, isErr bool) {
+// ── Prompts ──
+
+func promptDefinitions() []map[string]any {
+	return []map[string]any{
+		{
+			"name":        "bug_bounty_recon",
+			"description": "Run a bug-bounty-focused recon workflow against a target. Selects high-signal modules for rapid vulnerability discovery.",
+			"arguments": []map[string]any{
+				{"name": "target", "description": "Target hostname, IP or URL", "required": true},
+			},
+		},
+		{
+			"name":        "passive_recon",
+			"description": "Passive-only reconnaissance — no traffic touches the target. Safe for pre-authorization or stealth assessment.",
+			"arguments": []map[string]any{
+				{"name": "target", "description": "Target hostname, IP or URL", "required": true},
+			},
+		},
+		{
+			"name":        "subdomain_takeover_check",
+			"description": "Discover subdomains and check for takeover opportunities via dangling DNS records.",
+			"arguments": []map[string]any{
+				{"name": "target", "description": "Target hostname or URL", "required": true},
+			},
+		},
+		{
+			"name":        "full_recon",
+			"description": "Comprehensive recon with all 21 modules. May take several minutes.",
+			"arguments": []map[string]any{
+				{"name": "target", "description": "Target hostname, IP or URL", "required": true},
+				{"name": "passive_only", "description": "Set to 'true' to skip active modules", "required": false},
+			},
+		},
+		{
+			"name":        "web_assessment",
+			"description": "Web application security assessment: fingerprinting, header audit, CORS, directory brute-force and API discovery.",
+			"arguments": []map[string]any{
+				{"name": "target", "description": "Target URL or hostname", "required": true},
+			},
+		},
+	}
+}
+
+func buildPrompt(name string, args map[string]string) ([]map[string]any, bool) {
+	target := args["target"]
+	if target == "" {
+		target = "{{target}}"
+	}
+
+	var instruction string
+	var modules string
+	var extra string
+
+	switch name {
+	case "bug_bounty_recon":
+		instruction = "Run a bug-bounty-focused recon against " + target + ". Focus on high-signal findings: subdomain takeover, CORS misconfig, exposed APIs, cloud storage, leaked secrets."
+		modules = `["passivesrc","dns","wayback","headers","cors","cloud","apiscan","content","jsdeep","endprobe","takeover"]`
+	case "passive_recon":
+		instruction = "Run passive-only recon against " + target + ". Do NOT send any traffic to the target — use only public data sources."
+		modules = `["whois","asnmap","passivesrc","dns","wayback"]`
+		extra = `, "passive": true`
+	case "subdomain_takeover_check":
+		instruction = "Discover subdomains of " + target + " and check each for takeover opportunities."
+		modules = `["passivesrc","dns","wayback","permute","httprobe","takeover"]`
+	case "full_recon":
+		instruction = "Run a comprehensive recon against " + target + " using all modules."
+		if args["passive_only"] == "true" {
+			extra = `, "passive": true`
+		}
+	case "web_assessment":
+		instruction = "Assess the web application at " + target + " for security issues: server fingerprint, security headers, CORS, hidden paths, APIs."
+		modules = `["webserver","metafiles","headers","content","cors","dirbrute","apiscan","crawler"]`
+	default:
+		return nil, false
+	}
+
+	scanCall := fmt.Sprintf(`{"target": %q`, target)
+	if modules != "" {
+		scanCall += fmt.Sprintf(`, "modules": %s`, modules)
+	}
+	scanCall += extra + "}"
+
+	messages := []map[string]any{
+		{
+			"role": "user",
+			"content": map[string]any{
+				"type": "text",
+				"text": instruction + "\n\nUse the scan tool with these arguments:\n" + scanCall,
+			},
+		},
+	}
+	return messages, true
+}
+
+// ── Completions ──
+
+func completeArgument(refType, refName, argName, prefix string) []string {
+	prefix = strings.ToLower(prefix)
+
+	switch {
+	case argName == "modules" || (refType == "ref/tool" && refName == "scan" && argName == "modules"):
+		return filterPrefix(allModuleNames(), prefix)
+
+	case argName == "ports" || (refType == "ref/tool" && refName == "scan" && argName == "ports"):
+		return filterPrefix([]string{"top100", "1-1024", "full"}, prefix)
+
+	case argName == "min_severity" || (refType == "ref/tool" && refName == "scan" && argName == "min_severity"):
+		return filterPrefix([]string{"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}, prefix)
+
+	case argName == "objective" || (refType == "ref/prompt" && argName == "objective"):
+		return filterPrefix([]string{
+			"passive recon", "subdomain discovery", "web assessment",
+			"vulnerability scan", "bug bounty", "api discovery",
+			"cloud storage enumeration", "port scanning", "full scan",
+		}, prefix)
+
+	case argName == "name" && refType == "ref/prompt":
+		return filterPrefix([]string{
+			"bug_bounty_recon", "passive_recon", "subdomain_takeover_check",
+			"full_recon", "web_assessment",
+		}, prefix)
+	}
+
+	return []string{}
+}
+
+func allModuleNames() []string {
+	names := make([]string, len(moduleRegistry))
+	for i, e := range moduleRegistry {
+		names[i] = e.Name
+	}
+	return names
+}
+
+func filterPrefix(items []string, prefix string) []string {
+	if prefix == "" {
+		return items
+	}
+	var out []string
+	for _, item := range items {
+		if strings.HasPrefix(strings.ToLower(item), prefix) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// toolResult holds the output of a tool execution.
+type toolResult struct {
+	Text              string
+	IsError           bool
+	StructuredContent any
+}
+
+// executeTool dispatches a tool call by name.
+func executeTool(name string, argsRaw json.RawMessage, tc *toolCall) toolResult {
 	switch name {
 	case "list_modules":
-		return executeListModules()
+		text, isErr := executeListModules()
+		return toolResult{Text: text, IsError: isErr}
 	case "suggest_modules":
-		return executeSuggestModules(argsRaw)
+		text, isErr := executeSuggestModules(argsRaw)
+		return toolResult{Text: text, IsError: isErr}
 	case "server_info":
-		return executeServerInfo(tc)
+		text, isErr := executeServerInfo(tc)
+		return toolResult{Text: text, IsError: isErr}
 	case "scan":
 		return executeScan(argsRaw, tc)
 	default:
-		return fmt.Sprintf("unknown tool: %q", name), true
+		return toolResult{Text: fmt.Sprintf("unknown tool: %q", name), IsError: true}
 	}
 }
 
@@ -358,17 +515,17 @@ func executeServerInfo(tc *toolCall) (string, bool) {
 		ver = tc.srv.version
 	}
 	info := map[string]any{
-		"name":               "w1r3hound",
-		"version":            ver,
-		"protocol":           "2025-06-18",
-		"supportedVersions":  []string{"2025-06-18", "2026-07-28"},
-		"total_modules":      len(moduleRegistry),
-		"tools":              []string{"list_modules", "suggest_modules", "server_info", "scan"},
-		"ssrf_guard":         "enabled by default (set allow_private=true to override)",
-		"scan_timeout":       "default 300s, max 600s",
-		"progress":           "notifications/progress sent when progressToken provided in _meta",
-		"logging":            "notifications/message streamed during scan; control with logging/setLevel",
-		"findings_format":    "OWASP WSTG aligned, severity: CRITICAL/HIGH/MEDIUM/LOW/INFO",
+		"name":                "w1r3hound",
+		"version":             ver,
+		"protocol":            "2025-06-18",
+		"supportedVersions":   []string{"2025-06-18", "2026-07-28"},
+		"total_modules":       len(moduleRegistry),
+		"tools":               []string{"list_modules", "suggest_modules", "server_info", "scan"},
+		"ssrf_guard":          "enabled by default (set allow_private=true to override)",
+		"scan_timeout":        "default 300s, max 600s",
+		"progress":            "notifications/progress sent when progressToken provided in _meta",
+		"logging":             "notifications/message streamed during scan; control with logging/setLevel",
+		"findings_format":     "OWASP WSTG aligned, severity: CRITICAL/HIGH/MEDIUM/LOW/INFO",
 		"content_annotations": true,
 	}
 	data, _ := json.MarshalIndent(info, "", "  ")
@@ -429,18 +586,69 @@ func (t *logTee) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func executeScan(argsRaw json.RawMessage, tc *toolCall) (string, bool) {
+func scanOutputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"report": map[string]any{
+				"type":        "object",
+				"description": "Full scan report with target, timing and findings",
+				"properties": map[string]any{
+					"target":     map[string]any{"type": "string"},
+					"started_at": map[string]any{"type": "string", "format": "date-time"},
+					"ended_at":   map[string]any{"type": "string", "format": "date-time"},
+					"findings": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"severity":    map[string]any{"type": "string", "enum": []string{"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}},
+								"category":    map[string]any{"type": "string"},
+								"title":       map[string]any{"type": "string"},
+								"description": map[string]any{"type": "string"},
+								"evidence":    map[string]any{"type": "string"},
+								"reference":   map[string]any{"type": "string"},
+							},
+						},
+					},
+				},
+			},
+			"log": map[string]any{
+				"type":        "string",
+				"description": "Full scan execution log",
+			},
+			"summary": map[string]any{
+				"type":        "object",
+				"description": "Scan summary with finding counts by severity",
+				"properties": map[string]any{
+					"target":         map[string]any{"type": "string"},
+					"total_findings": map[string]any{"type": "integer"},
+					"by_severity":    map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "integer"}},
+					"started_at":     map[string]any{"type": "string", "format": "date-time"},
+					"ended_at":       map[string]any{"type": "string", "format": "date-time"},
+				},
+			},
+		},
+		"required": []string{"report", "log", "summary"},
+	}
+}
+
+func executeScan(argsRaw json.RawMessage, tc *toolCall) toolResult {
+	scanErr := func(msg string) toolResult {
+		return toolResult{Text: msg, IsError: true}
+	}
+
 	var p scanParams
 	if len(argsRaw) > 0 {
 		if err := json.Unmarshal(argsRaw, &p); err != nil {
-			return "invalid scan arguments: " + err.Error(), true
+			return scanErr("invalid scan arguments: " + err.Error())
 		}
 	}
 	if p.Target == "" {
-		return "target is required", true
+		return scanErr("target is required")
 	}
 	if err := validateTarget(p.Target); err != nil {
-		return err.Error(), true
+		return scanErr(err.Error())
 	}
 
 	// Validate requested modules.
@@ -449,7 +657,7 @@ func executeScan(argsRaw json.RawMessage, tc *toolCall) (string, bool) {
 		for _, m := range p.Modules {
 			m = strings.ToLower(strings.TrimSpace(m))
 			if !knownModuleSet[m] {
-				return fmt.Sprintf("unknown module: %q — use list_modules to see available names", m), true
+				return scanErr(fmt.Sprintf("unknown module: %q — use list_modules to see available names", m))
 			}
 			selected[m] = true
 		}
@@ -460,30 +668,30 @@ func executeScan(argsRaw json.RawMessage, tc *toolCall) (string, bool) {
 	if p.MinSeverity != "" {
 		sev, ok := severityOrder[strings.ToUpper(p.MinSeverity)]
 		if !ok {
-			return fmt.Sprintf("invalid min_severity: %q — must be INFO, LOW, MEDIUM, HIGH or CRITICAL", p.MinSeverity), true
+			return scanErr(fmt.Sprintf("invalid min_severity: %q — must be INFO, LOW, MEDIUM, HIGH or CRITICAL", p.MinSeverity))
 		}
 		minSev = sev
 	}
 
 	// Validate headers.
 	if len(p.Headers) > 32 {
-		return "too many headers (max 32)", true
+		return scanErr("too many headers (max 32)")
 	}
 	for name, value := range p.Headers {
 		if strings.ContainsAny(name, " \t\r\n\x00") || strings.ContainsAny(value, "\r\n\x00") {
-			return fmt.Sprintf("invalid header %q: must not contain control characters", name), true
+			return scanErr(fmt.Sprintf("invalid header %q: must not contain control characters", name))
 		}
 	}
 
 	// Validate resolver(s).
 	if p.Resolver != "" {
 		if !validResolver(p.Resolver) {
-			return "invalid resolver: must be a bare IP or ip:port (e.g. '1.1.1.1' or '8.8.8.8:53')", true
+			return scanErr("invalid resolver: must be a bare IP or ip:port (e.g. '1.1.1.1' or '8.8.8.8:53')")
 		}
 	}
 	for i, r := range p.Resolvers {
 		if !validResolver(r) {
-			return fmt.Sprintf("invalid resolver at index %d: %q — must be a bare IP or ip:port", i, r), true
+			return scanErr(fmt.Sprintf("invalid resolver at index %d: %q — must be a bare IP or ip:port", i, r))
 		}
 	}
 
@@ -646,16 +854,16 @@ func executeScan(argsRaw json.RawMessage, tc *toolCall) (string, bool) {
 		snap.Findings = filtered
 	}
 
-	result := map[string]any{
+	structured := map[string]any{
 		"report":  snap,
 		"log":     tee.buf.String(),
 		"summary": buildSummary(snap),
 	}
-	data, err := json.MarshalIndent(result, "", "  ")
+	data, err := json.MarshalIndent(structured, "", "  ")
 	if err != nil {
-		return "failed to serialize report: " + err.Error(), true
+		return toolResult{Text: "failed to serialize report: " + err.Error(), IsError: true}
 	}
-	return string(data), false
+	return toolResult{Text: string(data), StructuredContent: structured}
 }
 
 func buildSummary(snap core.ReportData) map[string]any {

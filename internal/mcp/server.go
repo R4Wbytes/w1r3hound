@@ -159,6 +159,12 @@ func (s *Server) dispatch(req *request) {
 		s.send(req.ID, map[string]any{"resultType": "complete"})
 	case "logging/setLevel":
 		s.handleSetLogLevel(req)
+	case "prompts/list":
+		s.handlePromptsList(req)
+	case "prompts/get":
+		s.handlePromptsGet(req)
+	case "completion/complete":
+		s.handleComplete(req)
 	case "tools/list":
 		s.handleToolsList(req)
 	case "tools/call":
@@ -179,8 +185,10 @@ var serverInstructions = "w1r3hound is an offensive reconnaissance toolkit with 
 
 func (s *Server) serverCapabilities() map[string]any {
 	return map[string]any{
-		"tools":   map[string]any{"listChanged": false},
-		"logging": map[string]any{},
+		"tools":       map[string]any{"listChanged": false},
+		"prompts":     map[string]any{"listChanged": false},
+		"completions": map[string]any{},
+		"logging":     map[string]any{},
 	}
 }
 
@@ -243,6 +251,62 @@ func (s *Server) handleSetLogLevel(req *request) {
 	s.send(req.ID, map[string]any{"resultType": "complete"})
 }
 
+func (s *Server) handlePromptsList(req *request) {
+	s.send(req.ID, map[string]any{
+		"resultType": "complete",
+		"prompts":    promptDefinitions(),
+	})
+}
+
+func (s *Server) handlePromptsGet(req *request) {
+	var params struct {
+		Name      string            `json:"name"`
+		Arguments map[string]string `json:"arguments"`
+	}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			s.sendError(req.ID, -32602, "invalid params: "+err.Error())
+			return
+		}
+	}
+	messages, ok := buildPrompt(params.Name, params.Arguments)
+	if !ok {
+		s.sendError(req.ID, -32602, fmt.Sprintf("unknown prompt: %q", params.Name))
+		return
+	}
+	s.send(req.ID, map[string]any{
+		"resultType": "complete",
+		"messages":   messages,
+	})
+}
+
+func (s *Server) handleComplete(req *request) {
+	var params struct {
+		Ref struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"ref"`
+		Argument struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		} `json:"argument"`
+	}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			s.sendError(req.ID, -32602, "invalid params: "+err.Error())
+			return
+		}
+	}
+	values := completeArgument(params.Ref.Type, params.Ref.Name, params.Argument.Name, params.Argument.Value)
+	s.send(req.ID, map[string]any{
+		"completion": map[string]any{
+			"values":  values,
+			"hasMore": false,
+			"total":   len(values),
+		},
+	})
+}
+
 func (s *Server) handleToolsList(req *request) {
 	s.send(req.ID, map[string]any{
 		"resultType": "complete",
@@ -287,32 +351,36 @@ func (s *Server) handleToolsCall(req *request) {
 			defer cancel()
 			defer s.activeReqs.Delete(reqKey)
 			tc.ctx = ctx
-			text, isErr := executeTool(params.Name, params.Arguments, tc)
-			s.sendToolResult(req.ID, text, isErr)
+			tr := executeTool(params.Name, params.Arguments, tc)
+			s.sendToolResult(req.ID, tr)
 		}()
 		return
 	}
 
 	tc.ctx = context.Background()
-	text, isErr := executeTool(params.Name, params.Arguments, tc)
-	s.sendToolResult(req.ID, text, isErr)
+	tr := executeTool(params.Name, params.Arguments, tc)
+	s.sendToolResult(req.ID, tr)
 }
 
-func (s *Server) sendToolResult(id json.RawMessage, text string, isErr bool) {
-	s.send(id, map[string]any{
+func (s *Server) sendToolResult(id json.RawMessage, tr toolResult) {
+	result := map[string]any{
 		"resultType": "complete",
 		"content": []map[string]any{
 			{
 				"type": "text",
-				"text": text,
+				"text": tr.Text,
 				"annotations": map[string]any{
 					"audience": []string{"user", "assistant"},
 					"priority": 1.0,
 				},
 			},
 		},
-		"isError": isErr,
-	})
+		"isError": tr.IsError,
+	}
+	if tr.StructuredContent != nil {
+		result["structuredContent"] = tr.StructuredContent
+	}
+	s.send(id, result)
 }
 
 func (s *Server) send(id json.RawMessage, result any) {
