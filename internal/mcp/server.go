@@ -350,6 +350,14 @@ func (s *Server) handleToolsCall(req *request) {
 			defer s.wg.Done()
 			defer cancel()
 			defer s.activeReqs.Delete(reqKey)
+			defer func() {
+				if r := recover(); r != nil {
+					s.sendToolResult(req.ID, toolResult{
+						Text:    fmt.Sprintf("internal error: %v", r),
+						IsError: true,
+					})
+				}
+			}()
 			tc.ctx = ctx
 			tr := executeTool(params.Name, params.Arguments, tc)
 			s.sendToolResult(req.ID, tr)

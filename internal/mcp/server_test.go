@@ -770,3 +770,43 @@ func TestCapabilitiesIncludePromptsAndCompletions(t *testing.T) {
 		t.Error("capabilities.completions missing")
 	}
 }
+
+// ── Regression: prompts/get without arguments must not panic ──
+
+func TestPromptsGetNoArguments(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"bug_bounty_recon"}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error != nil {
+		t.Fatalf("prompts/get without arguments should not error: %v", resp.Error)
+	}
+	result, _ := resp.Result.(map[string]any)
+	messages, ok := result["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		t.Fatal("expected messages even without explicit arguments")
+	}
+}
+
+func TestPromptsGetNullArguments(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"passive_recon","arguments":null}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error != nil {
+		t.Fatalf("prompts/get with null arguments should not error: %v", resp.Error)
+	}
+}
+
+// ── Regression: completion/complete without params ──
+
+func TestCompletionNoParams(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"completion/complete"}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error != nil {
+		// Acceptable: -32602 for missing params
+		return
+	}
+	result, _ := resp.Result.(map[string]any)
+	completion, _ := result["completion"].(map[string]any)
+	values, _ := completion["values"].([]any)
+	if len(values) != 0 {
+		t.Errorf("expected empty completions for no params, got %v", values)
+	}
+}

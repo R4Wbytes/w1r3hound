@@ -307,6 +307,9 @@ func promptDefinitions() []map[string]any {
 }
 
 func buildPrompt(name string, args map[string]string) ([]map[string]any, bool) {
+	if args == nil {
+		args = map[string]string{}
+	}
 	target := args["target"]
 	if target == "" {
 		target = "{{target}}"
@@ -363,16 +366,16 @@ func completeArgument(refType, refName, argName, prefix string) []string {
 	prefix = strings.ToLower(prefix)
 
 	switch {
-	case argName == "modules" || (refType == "ref/tool" && refName == "scan" && argName == "modules"):
+	case refType == "ref/tool" && refName == "scan" && argName == "modules":
 		return filterPrefix(allModuleNames(), prefix)
 
-	case argName == "ports" || (refType == "ref/tool" && refName == "scan" && argName == "ports"):
+	case refType == "ref/tool" && refName == "scan" && argName == "ports":
 		return filterPrefix([]string{"top100", "1-1024", "full"}, prefix)
 
-	case argName == "min_severity" || (refType == "ref/tool" && refName == "scan" && argName == "min_severity"):
+	case refType == "ref/tool" && refName == "scan" && argName == "min_severity":
 		return filterPrefix([]string{"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}, prefix)
 
-	case argName == "objective" || (refType == "ref/prompt" && argName == "objective"):
+	case refType == "ref/tool" && refName == "suggest_modules" && argName == "objective":
 		return filterPrefix([]string{
 			"passive recon", "subdomain discovery", "web assessment",
 			"vulnerability scan", "bug bounty", "api discovery",
