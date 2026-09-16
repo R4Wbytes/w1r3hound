@@ -241,7 +241,7 @@ func toolDefinitions() []map[string]any {
 					"timeout_seconds":      map[string]any{"type": "integer", "description": "Per-request timeout in seconds (default 10, max 120)"},
 					"ports":                map[string]any{"type": "string", "enum": []string{"top100", "1-1024", "full"}, "description": "Port range for portscan module"},
 					"rate_limit":           map[string]any{"type": "integer", "description": "Max requests/second (0 = unlimited)"},
-					"max_duration_seconds": map[string]any{"type": "integer", "description": "Overall scan timeout in seconds (default 300, max 600)"},
+					"max_duration_seconds": map[string]any{"type": "integer", "description": "Overall scan timeout in seconds (default 300, max 1800)"},
 					"allow_private":        map[string]any{"type": "boolean", "description": "Allow scanning private/internal IPs (default false — SSRF guard)"},
 					"verbose":              map[string]any{"type": "boolean", "description": "Include debug-level output"},
 					"user_agent":           map[string]any{"type": "string", "description": "Custom User-Agent string for HTTP requests"},
@@ -525,7 +525,7 @@ func executeServerInfo(tc *toolCall) (string, bool) {
 		"total_modules":       len(moduleRegistry),
 		"tools":               []string{"list_modules", "suggest_modules", "server_info", "scan"},
 		"ssrf_guard":          "enabled by default (set allow_private=true to override)",
-		"scan_timeout":        "default 300s, max 600s",
+		"scan_timeout":        "default 300s, max 1800s",
 		"progress":            "notifications/progress sent when progressToken provided in _meta",
 		"logging":             "notifications/message streamed during scan; control with logging/setLevel",
 		"findings_format":     "OWASP WSTG aligned, severity: CRITICAL/HIGH/MEDIUM/LOW/INFO",
@@ -756,10 +756,10 @@ func executeScan(argsRaw json.RawMessage, tc *toolCall) toolResult {
 		cfg.MaxJSFiles = p.JSFiles
 	}
 
-	// Overall scan timeout (default 5 min, max 10 min).
+	// Overall scan timeout (default 5 min, max 30 min).
 	// Layer the timeout on top of the parent context (which may carry cancellation).
 	maxDur := 300 * time.Second
-	if p.MaxDurationSeconds > 0 && p.MaxDurationSeconds <= 600 {
+	if p.MaxDurationSeconds > 0 && p.MaxDurationSeconds <= 1800 {
 		maxDur = time.Duration(p.MaxDurationSeconds) * time.Second
 	}
 	parentCtx := context.Background()
