@@ -393,9 +393,11 @@ Launch with `--mcp` to start a JSON-RPC 2.0 server over stdio
 **Tools** — `scan` (async with cancellation + progress), `list_modules`,
 `suggest_modules`, `server_info`.
 
-**Prompts** — five canned recon workflows: `bug_bounty_recon`,
+**Prompts** — six canned recon workflows: `bug_bounty_recon`,
 `passive_recon`, `subdomain_takeover_check`, `full_recon`,
-`web_assessment`.
+`web_assessment`, `exhaustive_recon` (all 21 modules, full port scan,
+extended crawl/JS/Wayback, dirbrute with backup extensions — throttled
+for stealth).
 
 **Completions** — auto-complete for module names, port ranges, severity
 levels, and prompt names.

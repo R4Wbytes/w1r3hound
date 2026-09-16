@@ -725,6 +725,36 @@ func TestBuildPrompt_PassiveFlag(t *testing.T) {
 	}
 }
 
+func TestBuildPrompt_Exhaustive(t *testing.T) {
+	msgs, ok := buildPrompt("exhaustive_recon", map[string]string{"target": "example.com"})
+	if !ok {
+		t.Fatal("exhaustive_recon should be known")
+	}
+	content, _ := msgs[0]["content"].(map[string]any)
+	text, _ := content["text"].(string)
+
+	for _, want := range []string{
+		`"ports": "full"`,
+		`"concurrency": 5`,
+		`"rate_limit": 3`,
+		`"timeout_seconds": 30`,
+		`"max_duration_seconds": 1800`,
+		`"crawl_pages": 500`,
+		`"js_files": 200`,
+		`"wayback_limit": 10000`,
+		`"dir_extensions":`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("exhaustive_recon missing %q in scan args", want)
+		}
+	}
+	for _, absent := range []string{`"verbose"`, `"modules"`} {
+		if strings.Contains(text, absent) {
+			t.Errorf("exhaustive_recon should not contain %q", absent)
+		}
+	}
+}
+
 // ── completeArgument ──
 
 func TestCompleteArgument_Modules(t *testing.T) {

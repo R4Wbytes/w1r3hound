@@ -694,6 +694,28 @@ func TestPromptsGetUnknown(t *testing.T) {
 	}
 }
 
+func TestPromptsGetExhaustive(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"exhaustive_recon","arguments":{"target":"example.com"}}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error != nil {
+		t.Fatalf("prompts/get error: %v", resp.Error)
+	}
+	result, _ := resp.Result.(map[string]any)
+	messages, ok := result["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		t.Fatal("expected messages in response")
+	}
+	msg, _ := messages[0].(map[string]any)
+	content, _ := msg["content"].(map[string]any)
+	text, _ := content["text"].(string)
+	if !strings.Contains(text, `"ports": "full"`) {
+		t.Error("exhaustive_recon prompt should include full port scan")
+	}
+	if !strings.Contains(text, `"rate_limit": 3`) {
+		t.Error("exhaustive_recon prompt should include rate limiting")
+	}
+}
+
 // ── Completions ──
 
 func TestCompletionModules(t *testing.T) {

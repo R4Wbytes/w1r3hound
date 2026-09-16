@@ -17,8 +17,9 @@ each landed with a regression test.
   (protocol version `2025-06-18`). Zero external dependencies.
   - Tools: `scan` (async with cancellation + progress notifications),
     `list_modules`, `suggest_modules`, `server_info`.
-  - Prompts: five canned recon workflows (`bug_bounty_recon`, `passive_recon`,
-    `subdomain_takeover_check`, `full_recon`, `web_assessment`).
+  - Prompts: six canned recon workflows (`bug_bounty_recon`, `passive_recon`,
+    `subdomain_takeover_check`, `full_recon`, `web_assessment`,
+    `exhaustive_recon`).
   - Completions: auto-complete for module names, port ranges, severity levels,
     prompt names.
   - Structured output: `outputSchema` on scan tool with JSON Schema describing

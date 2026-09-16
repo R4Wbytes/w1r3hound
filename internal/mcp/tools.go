@@ -303,6 +303,15 @@ func promptDefinitions() []map[string]any {
 				{"name": "target", "description": "Target URL or hostname", "required": true},
 			},
 		},
+		{
+			"name": "exhaustive_recon",
+			"description": "Maximum-depth stealth recon: all 21 modules, full port range (65535), " +
+				"extended crawling/JS/Wayback, directory brute-force with backup/config extensions — " +
+				"throttled with low concurrency and rate limiting to minimize detection.",
+			"arguments": []map[string]any{
+				{"name": "target", "description": "Target hostname, IP or URL", "required": true},
+			},
+		},
 	}
 }
 
@@ -338,6 +347,16 @@ func buildPrompt(name string, args map[string]string) ([]map[string]any, bool) {
 	case "web_assessment":
 		instruction = "Assess the web application at " + target + " for security issues: server fingerprint, security headers, CORS, hidden paths, APIs."
 		modules = `["webserver","metafiles","headers","content","cors","dirbrute","apiscan","crawler"]`
+	case "exhaustive_recon":
+		instruction = "Run maximum-depth stealth recon against " + target +
+			". All 21 modules, full port scan, extended crawl/JS/Wayback limits, " +
+			"directory brute-force with backup and config extensions. " +
+			"Throttled: low concurrency and rate limiting to minimize detection footprint. " +
+			"Report every finding regardless of severity."
+		extra = `, "ports": "full", "concurrency": 5, "rate_limit": 3, ` +
+			`"timeout_seconds": 30, "max_duration_seconds": 1800, ` +
+			`"crawl_pages": 500, "js_files": 200, "wayback_limit": 10000, ` +
+			`"dir_extensions": ".bak,.php,.asp,.aspx,.jsp,.zip,.tar.gz,.sql,.conf,.env,.xml,.json,.yml,.log,.old,.txt,.swp,~"`
 	default:
 		return nil, false
 	}
