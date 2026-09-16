@@ -169,6 +169,13 @@ func initCancelContext(cfg *Config) {
 	cfg.Cancel = func() { cancel(nil) }
 }
 
+// SetContext replaces the root cancel context and its cancel function. The MCP
+// server uses this to layer a scan-level timeout on top of the default context.
+func (c *Config) SetContext(ctx context.Context, cancel context.CancelFunc) {
+	c.cancelCtx = ctx
+	c.Cancel = cancel
+}
+
 // Context returns a child context derived from the root cancel context, with
 // the per-request timeout layered on top. Modules should pass this to
 // DialContext-style APIs so SIGINT (which triggers cfg.Cancel()) tears down
@@ -691,11 +698,20 @@ func (d ReportData) SaveJSON(path string) error {
 
 type Logger struct {
 	verbose bool
+	plain   bool // omit ANSI colour codes (for machine-readable consumers)
 	mu      sync.Mutex
+	w       io.Writer
 }
 
 func NewLogger(verbose bool) *Logger {
-	return &Logger{verbose: verbose}
+	return &Logger{verbose: verbose, w: os.Stderr}
+}
+
+func NewLoggerWriter(verbose, plain bool, w io.Writer) *Logger {
+	if w == nil {
+		w = os.Stderr
+	}
+	return &Logger{verbose: verbose, plain: plain, w: w}
 }
 
 // stripControl neutralises ANSI escape sequences and other C0/C1 control bytes
@@ -755,27 +771,43 @@ func scrubArgs(args []any) []any {
 func (l *Logger) Module(name string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	fmt.Fprintf(os.Stderr, "\n\033[1;36m  ┌──────────────────────────────────────────────────┐\033[0m\n")
-	fmt.Fprintf(os.Stderr, "\033[1;36m  │ ◉ %s\033[0m\n", stripControl(strings.ToUpper(name)))
-	fmt.Fprintf(os.Stderr, "\033[1;36m  └──────────────────────────────────────────────────┘\033[0m\n")
+	if l.plain {
+		fmt.Fprintf(l.w, "\n  === %s ===\n", stripControl(strings.ToUpper(name)))
+		return
+	}
+	fmt.Fprintf(l.w, "\n\033[1;36m  ┌──────────────────────────────────────────────────┐\033[0m\n")
+	fmt.Fprintf(l.w, "\033[1;36m  │ ◉ %s\033[0m\n", stripControl(strings.ToUpper(name)))
+	fmt.Fprintf(l.w, "\033[1;36m  └──────────────────────────────────────────────────┘\033[0m\n")
 }
 
 func (l *Logger) Info(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	fmt.Fprintf(os.Stderr, "\033[32m  ▸\033[0m "+format+"\n", scrubArgs(args)...)
+	if l.plain {
+		fmt.Fprintf(l.w, "  [INFO] "+format+"\n", scrubArgs(args)...)
+		return
+	}
+	fmt.Fprintf(l.w, "\033[32m  ▸\033[0m "+format+"\n", scrubArgs(args)...)
 }
 
 func (l *Logger) Warn(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	fmt.Fprintf(os.Stderr, "\033[33m  ⚠\033[0m "+format+"\n", scrubArgs(args)...)
+	if l.plain {
+		fmt.Fprintf(l.w, "  [WARN] "+format+"\n", scrubArgs(args)...)
+		return
+	}
+	fmt.Fprintf(l.w, "\033[33m  ⚠\033[0m "+format+"\n", scrubArgs(args)...)
 }
 
 func (l *Logger) Error(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	fmt.Fprintf(os.Stderr, "\033[31m  ✖\033[0m "+format+"\n", scrubArgs(args)...)
+	if l.plain {
+		fmt.Fprintf(l.w, "  [ERROR] "+format+"\n", scrubArgs(args)...)
+		return
+	}
+	fmt.Fprintf(l.w, "\033[31m  ✖\033[0m "+format+"\n", scrubArgs(args)...)
 }
 
 func (l *Logger) Debug(format string, args ...any) {
@@ -784,7 +816,11 @@ func (l *Logger) Debug(format string, args ...any) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	fmt.Fprintf(os.Stderr, "\033[90m  ─ %s\033[0m\n", stripControl(fmt.Sprintf(format, args...)))
+	if l.plain {
+		fmt.Fprintf(l.w, "  [DEBUG] %s\n", stripControl(fmt.Sprintf(format, args...)))
+		return
+	}
+	fmt.Fprintf(l.w, "\033[90m  ─ %s\033[0m\n", stripControl(fmt.Sprintf(format, args...)))
 }
 
 // RecoverWorker should be `defer`-ed as the first statement inside a worker
@@ -803,6 +839,10 @@ func RecoverWorker(log *Logger, module string) {
 func (l *Logger) Finding(sev Severity, title string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.plain {
+		fmt.Fprintf(l.w, "    [%s] %s\n", sev, stripControl(title))
+		return
+	}
 	var color string
 	switch sev {
 	case SevCritical:
@@ -816,5 +856,5 @@ func (l *Logger) Finding(sev Severity, title string) {
 	default:
 		color = "\033[37m"
 	}
-	fmt.Fprintf(os.Stderr, "    %s■ [%s]\033[0m %s\n", color, sev, stripControl(title))
+	fmt.Fprintf(l.w, "    %s■ [%s]\033[0m %s\n", color, sev, stripControl(title))
 }

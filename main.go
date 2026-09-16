@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/R4Wbytes/w1r3hound/internal/core"
+	"github.com/R4Wbytes/w1r3hound/internal/mcp"
 	"github.com/R4Wbytes/w1r3hound/internal/modules"
 	"github.com/R4Wbytes/w1r3hound/internal/report"
 )
@@ -235,6 +236,7 @@ func main() {
 
 	moduleList := flag.String("protocols", "all", "Comma-separated protocols: recon,traceroute,passivewatch,fingerprinter,archaeology,diversify,heartbeat,probescan,metadata,sentry,deepdive,portscan,corstrace,cloudsniff,bruteforce,apiscan,saasenum,crawler,jsdeep,endprobe,takeover")
 	flag.StringVar(moduleList, "m", "all", "Protocols (shorthand)")
+	mcpMode := flag.Bool("mcp", false, "Run as MCP (Model Context Protocol) server on stdio for AI agents")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, bannerTpl, version)
@@ -253,6 +255,12 @@ func main() {
 	}
 
 	flag.Parse()
+
+	if *mcpMode {
+		mcp.Serve(version)
+		return
+	}
+
 	cfg.RequestHeaders = customHeaders
 
 	// Positional argument support: w1r3hound example.com

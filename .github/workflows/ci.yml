@@ -40,7 +40,7 @@ jobs:
       - name: FP/FN golden + fuzz seed corpus
         run: |
           go test ./internal/modules/ -run TestGoldenFindings
-          go test -run=Fuzz ./internal/core/ ./internal/modules/
+          go test -run=Fuzz ./internal/core/ ./internal/modules/ ./internal/mcp/
 
       - name: Build binaries
         run: |
@@ -49,6 +49,9 @@ jobs:
 
       - name: Smoke (loopback portscan)
         run: make smoke
+
+      - name: MCP smoke (initialize handshake)
+        run: make mcp-smoke
 
   vulncheck:
     runs-on: ubuntu-latest

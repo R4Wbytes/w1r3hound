@@ -26,6 +26,7 @@ help:
 	@echo "  vuln        govulncheck ./...   (informational; skipped if absent)"
 	@echo "  sec         gosec ./...         (informational; skipped if absent)"
 	@echo "  smoke       build + contained loopback portscan of 127.0.0.1"
+	@echo "  mcp-smoke   build + MCP initialize handshake over stdio"
 	@echo "  e2e-juiceshop  Docker Juice Shop end-to-end (TEST_PLAN.md 4.2)"
 	@echo "  e2e-ui      dev-only Playwright headless smoke of the web console"
 	@echo "  ci          vet + fmt-check + test-race + csp (the gate)"
@@ -96,6 +97,19 @@ smoke: build
 		echo "[smoke] FAILED: report not produced"; rm -rf $$tmp; exit 1; \
 	fi
 
+# MCP server smoke: send an initialize handshake over stdio and verify the
+# response contains the expected protocolVersion and serverInfo.
+.PHONY: mcp-smoke
+mcp-smoke: build
+	@echo "[mcp-smoke] MCP initialize handshake via stdio"; \
+	resp=$$(printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"1.0"}}}\n' \
+		| ./$(CLI_BIN) --mcp 2>/dev/null); \
+	if echo "$$resp" | grep -q '"protocolVersion"' && echo "$$resp" | grep -q '"w1r3hound"'; then \
+		echo "[mcp-smoke] OK: initialize response valid"; \
+	else \
+		echo "[mcp-smoke] FAILED: unexpected response: $$resp"; exit 1; \
+	fi
+
 # FP/FN golden snapshots (hermetic; also run by `test`/`test-race`).
 .PHONY: golden
 golden:
@@ -108,13 +122,13 @@ golden-update:
 # Re-run the fuzz seed corpora (parser hardening; SECURITY_ASSESSMENT §5).
 .PHONY: fuzz
 fuzz:
-	$(GO) test -run=Fuzz ./internal/core/ ./internal/modules/
+	$(GO) test -run=Fuzz ./internal/core/ ./internal/modules/ ./internal/mcp/
 
 # Micro-benchmarks for the hot paths (OPTIMIZATIONS.md §7): the AXFR
 # name-walker, the report builder, and the GUI buildArgs/parity path.
 .PHONY: bench
 bench:
-	$(GO) test -run='^$$' -bench=. -benchmem ./internal/modules/ ./internal/report/ ./webui/
+	$(GO) test -run='^$$' -bench=. -benchmem ./internal/modules/ ./internal/report/ ./webui/ ./internal/mcp/
 
 # OWASP Juice Shop end-to-end (TEST_PLAN.md §4.2). Needs Docker; pulls the image
 # once, runs the tagged test, and always tears down. Uses --network host so the
@@ -142,8 +156,8 @@ e2e-ui:
 	cd webui/e2e && npm install && npx playwright install chromium && npx playwright test
 
 .PHONY: ci
-ci: vet fmt-check test-race csp
-	@echo "ci: passed (vet, fmt-check, test-race, csp)"
+ci: vet fmt-check test-race csp mcp-smoke
+	@echo "ci: passed (vet, fmt-check, test-race, csp, mcp-smoke)"
 
 .PHONY: clean
 clean:
