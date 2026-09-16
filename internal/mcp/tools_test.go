@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -262,7 +263,7 @@ func TestSuggestModules_BugBounty(t *testing.T) {
 // ── server_info ──
 
 func TestServerInfo(t *testing.T) {
-	text, isErr := executeServerInfo(&Server{version: "test-1.0"})
+	text, isErr := executeServerInfo(&toolCall{srv: &Server{version: "test-1.0"}})
 	if isErr {
 		t.Fatalf("unexpected error: %s", text)
 	}
@@ -278,7 +279,7 @@ func TestServerInfo(t *testing.T) {
 }
 
 func TestServerInfo_NilServer(t *testing.T) {
-	text, isErr := executeServerInfo(nil)
+	text, isErr := executeServerInfo(nil) //nolint:staticcheck
 	if isErr {
 		t.Fatalf("unexpected error: %s", text)
 	}
@@ -525,6 +526,11 @@ func TestScanProgressNotifications(t *testing.T) {
 		version: "test",
 		enc:     json.NewEncoder(&out),
 	}
+	tc := &toolCall{
+		srv:           mcpSrv,
+		progressToken: json.RawMessage(`"test-token"`),
+		ctx:           context.Background(),
+	}
 
 	args, _ := json.Marshal(map[string]any{
 		"target":               srv.URL,
@@ -533,11 +539,14 @@ func TestScanProgressNotifications(t *testing.T) {
 		"max_duration_seconds": 15,
 		"allow_private":        true,
 	})
-	_, _ = executeScan(args, mcpSrv)
+	_, _ = executeScan(args, tc)
 
 	notifications := out.String()
 	if !strings.Contains(notifications, "notifications/progress") {
 		t.Error("expected progress notifications during scan")
+	}
+	if !strings.Contains(notifications, "test-token") {
+		t.Error("expected progressToken in notifications")
 	}
 	if !strings.Contains(notifications, "starting module: headers") {
 		t.Error("expected 'starting module: headers' notification")
@@ -584,7 +593,8 @@ func TestExecuteTool_SuggestModules(t *testing.T) {
 }
 
 func TestExecuteTool_ServerInfo(t *testing.T) {
-	text, isErr := executeTool("server_info", nil, &Server{version: "2.1"})
+	tc := &toolCall{srv: &Server{version: "2.1"}}
+	text, isErr := executeTool("server_info", nil, tc)
 	if isErr {
 		t.Fatalf("unexpected error: %s", text)
 	}

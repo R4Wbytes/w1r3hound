@@ -164,12 +164,29 @@ var suggestMap = []struct {
 		"Web crawling for forms and parameters"},
 }
 
+// toolCall carries per-invocation context from the server to tool execution.
+type toolCall struct {
+	srv           *Server
+	progressToken json.RawMessage
+	ctx           context.Context
+}
+
+// readOnly is the annotation set for tools that don't modify any state.
+var readOnly = map[string]any{
+	"readOnlyHint":    true,
+	"destructiveHint": false,
+	"idempotentHint":  true,
+	"openWorldHint":   false,
+}
+
 // toolDefinitions returns the MCP tool list for tools/list.
 func toolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "list_modules",
+			"title":       "List Recon Modules",
 			"description": "List all available w1r3hound recon modules with their categories, descriptions and usage hints. Use this to discover what modules are available before running a scan.",
+			"annotations": readOnly,
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -177,7 +194,9 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "suggest_modules",
+			"title":       "Suggest Modules",
 			"description": "Given a recon objective or task description, return the recommended modules to run. Use this when you know what you want to achieve but not which specific modules to select.",
+			"annotations": readOnly,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -191,15 +210,26 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "server_info",
+			"title":       "Server Info",
 			"description": "Return server version, capabilities and available module count. Use this to verify the MCP server is operational and check its configuration.",
+			"annotations": readOnly,
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
 			},
 		},
 		{
-			"name":        "scan",
-			"description": "Run w1r3hound recon modules against a target. Returns structured findings aligned to the OWASP WSTG framework with severity ratings (CRITICAL/HIGH/MEDIUM/LOW/INFO). Select specific modules for focused fast results, or omit modules to run all (may take several minutes). Progress notifications are sent as each module completes.",
+			"name":  "scan",
+			"title": "Run Scan",
+			"description": "Run w1r3hound recon modules against a target. Returns structured findings aligned to the OWASP WSTG framework with severity ratings (CRITICAL/HIGH/MEDIUM/LOW/INFO). " +
+				"Select specific modules for focused fast results, or omit modules to run all (may take several minutes). " +
+				"Pass a progressToken in _meta to receive progress notifications as each module completes.",
+			"annotations": map[string]any{
+				"readOnlyHint":    true,
+				"destructiveHint": false,
+				"idempotentHint":  true,
+				"openWorldHint":   true,
+			},
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -234,16 +264,16 @@ func toolDefinitions() []map[string]any {
 
 // executeTool dispatches a tool call by name and returns the result text and
 // whether the result represents an error.
-func executeTool(name string, argsRaw json.RawMessage, srv *Server) (text string, isErr bool) {
+func executeTool(name string, argsRaw json.RawMessage, tc *toolCall) (text string, isErr bool) {
 	switch name {
 	case "list_modules":
 		return executeListModules()
 	case "suggest_modules":
 		return executeSuggestModules(argsRaw)
 	case "server_info":
-		return executeServerInfo(srv)
+		return executeServerInfo(tc)
 	case "scan":
-		return executeScan(argsRaw, srv)
+		return executeScan(argsRaw, tc)
 	default:
 		return fmt.Sprintf("unknown tool: %q", name), true
 	}
@@ -322,21 +352,24 @@ func executeSuggestModules(argsRaw json.RawMessage) (string, bool) {
 	return string(data), false
 }
 
-func executeServerInfo(srv *Server) (string, bool) {
+func executeServerInfo(tc *toolCall) (string, bool) {
 	ver := ""
-	if srv != nil {
-		ver = srv.version
+	if tc != nil && tc.srv != nil {
+		ver = tc.srv.version
 	}
 	info := map[string]any{
-		"name":            "w1r3hound",
-		"version":         ver,
-		"protocol":        "2025-06-18",
-		"total_modules":   len(moduleRegistry),
-		"tools":           []string{"list_modules", "suggest_modules", "server_info", "scan"},
-		"ssrf_guard":      "enabled by default (set allow_private=true to override)",
-		"scan_timeout":    "default 300s, max 600s",
-		"progress":        "notifications/progress sent per module during scan",
-		"findings_format": "OWASP WSTG aligned, severity: CRITICAL/HIGH/MEDIUM/LOW/INFO",
+		"name":               "w1r3hound",
+		"version":            ver,
+		"protocol":           "2025-06-18",
+		"supportedVersions":  []string{"2025-06-18", "2026-07-28"},
+		"total_modules":      len(moduleRegistry),
+		"tools":              []string{"list_modules", "suggest_modules", "server_info", "scan"},
+		"ssrf_guard":         "enabled by default (set allow_private=true to override)",
+		"scan_timeout":       "default 300s, max 600s",
+		"progress":           "notifications/progress sent when progressToken provided in _meta",
+		"logging":            "notifications/message streamed during scan; control with logging/setLevel",
+		"findings_format":    "OWASP WSTG aligned, severity: CRITICAL/HIGH/MEDIUM/LOW/INFO",
+		"content_annotations": true,
 	}
 	data, _ := json.MarshalIndent(info, "", "  ")
 	return string(data), false
@@ -371,7 +404,32 @@ var severityOrder = map[string]int{
 	"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4,
 }
 
-func executeScan(argsRaw json.RawMessage, srv *Server) (string, bool) {
+// logTee captures log output into a buffer and streams complete lines as
+// MCP logging notifications (notifications/message).
+type logTee struct {
+	buf     bytes.Buffer
+	srv     *Server
+	partial string
+}
+
+func (t *logTee) Write(p []byte) (int, error) {
+	n, err := t.buf.Write(p)
+	t.partial += string(p)
+	for {
+		idx := strings.IndexByte(t.partial, '\n')
+		if idx < 0 {
+			break
+		}
+		line := t.partial[:idx]
+		t.partial = t.partial[idx+1:]
+		if strings.TrimSpace(line) != "" && t.srv != nil {
+			t.srv.notifyLog("info", "scan", line)
+		}
+	}
+	return n, err
+}
+
+func executeScan(argsRaw json.RawMessage, tc *toolCall) (string, bool) {
 	var p scanParams
 	if len(argsRaw) > 0 {
 		if err := json.Unmarshal(argsRaw, &p); err != nil {
@@ -452,7 +510,7 @@ func executeScan(argsRaw json.RawMessage, srv *Server) (string, bool) {
 		defer cfg.RL.Stop()
 	}
 
-	// Apply new parameters.
+	// Apply parameters.
 	if p.UserAgent != "" {
 		cfg.UserAgent = p.UserAgent
 	}
@@ -488,25 +546,32 @@ func executeScan(argsRaw json.RawMessage, srv *Server) (string, bool) {
 	}
 
 	// Overall scan timeout (default 5 min, max 10 min).
+	// Layer the timeout on top of the parent context (which may carry cancellation).
 	maxDur := 300 * time.Second
 	if p.MaxDurationSeconds > 0 && p.MaxDurationSeconds <= 600 {
 		maxDur = time.Duration(p.MaxDurationSeconds) * time.Second
 	}
-	scanCtx, scanCancel := context.WithTimeout(context.Background(), maxDur)
+	parentCtx := context.Background()
+	if tc != nil && tc.ctx != nil {
+		parentCtx = tc.ctx
+	}
+	scanCtx, scanCancel := context.WithTimeout(parentCtx, maxDur)
 	defer scanCancel()
 	cfg.SetContext(scanCtx, scanCancel)
 
-	// Set up resolver (only if not already set by custom resolver above).
 	if p.Resolver == "" {
 		cfg.Resolver = core.NewResolver("", cfg.Timeout)
 	}
 
-	// Detect scheme before normalizing — matches CLI flow.
 	cfg.Target = detectScheme(p.Target, cfg)
 
-	// Capture log output into a buffer.
-	var logBuf bytes.Buffer
-	log := core.NewLoggerWriter(p.Verbose, true, &logBuf)
+	// Capture log output; stream lines as notifications/message.
+	var srv *Server
+	if tc != nil {
+		srv = tc.srv
+	}
+	tee := &logTee{srv: srv}
+	log := core.NewLoggerWriter(p.Verbose, false, tee)
 
 	report := core.NewReport(cfg.Target)
 
@@ -529,6 +594,12 @@ func executeScan(argsRaw json.RawMessage, srv *Server) (string, bool) {
 		total++
 	}
 
+	// Determine the progressToken (only send progress if client requested it).
+	var progressToken json.RawMessage
+	if tc != nil {
+		progressToken = tc.progressToken
+	}
+
 	// Execute modules in phase order with progress notifications.
 	progress := 0
 	for _, mod := range moduleRegistry {
@@ -539,11 +610,8 @@ func executeScan(argsRaw json.RawMessage, srv *Server) (string, bool) {
 			continue
 		}
 		if srv != nil {
-			srv.notify("notifications/progress", map[string]any{
-				"progress": progress,
-				"total":    total + 1, // +1 for the surface summary
-				"message":  fmt.Sprintf("starting module: %s", mod.Name),
-			})
+			srv.notifyProgress(progressToken, progress, total+1,
+				fmt.Sprintf("starting module: %s", mod.Name))
 		}
 		safeRun(log, mod.Name, func() {
 			mod.Fn(cfg, report, log)
@@ -551,21 +619,14 @@ func executeScan(argsRaw json.RawMessage, srv *Server) (string, bool) {
 		progress++
 		if srv != nil {
 			snap := report.Snapshot()
-			srv.notify("notifications/progress", map[string]any{
-				"progress": progress,
-				"total":    total + 1,
-				"message":  fmt.Sprintf("completed: %s (%d findings so far)", mod.Name, len(snap.Findings)),
-			})
+			srv.notifyProgress(progressToken, progress, total+1,
+				fmt.Sprintf("completed: %s (%d findings so far)", mod.Name, len(snap.Findings)))
 		}
 	}
 
 	// Always run surface summary.
 	if srv != nil {
-		srv.notify("notifications/progress", map[string]any{
-			"progress": progress,
-			"total":    total + 1,
-			"message":  "running surface summary",
-		})
+		srv.notifyProgress(progressToken, progress, total+1, "running surface summary")
 	}
 	safeRun(log, "surface", func() {
 		modules.RunSurfaceSummary(cfg, report, log)
@@ -587,7 +648,7 @@ func executeScan(argsRaw json.RawMessage, srv *Server) (string, bool) {
 
 	result := map[string]any{
 		"report":  snap,
-		"log":     logBuf.String(),
+		"log":     tee.buf.String(),
 		"summary": buildSummary(snap),
 	}
 	data, err := json.MarshalIndent(result, "", "  ")

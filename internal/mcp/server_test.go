@@ -59,9 +59,69 @@ func TestInitialize(t *testing.T) {
 	if serverInfo["version"] != "test-version" {
 		t.Errorf("serverInfo.version = %v, want test-version", serverInfo["version"])
 	}
+	if serverInfo["title"] == nil || serverInfo["title"] == "" {
+		t.Error("serverInfo.title missing")
+	}
 	caps, _ := result["capabilities"].(map[string]any)
 	if _, ok := caps["tools"]; !ok {
 		t.Error("capabilities.tools missing")
+	}
+	if _, ok := caps["logging"]; !ok {
+		t.Error("capabilities.logging missing")
+	}
+	if result["instructions"] == nil || result["instructions"] == "" {
+		t.Error("instructions field missing")
+	}
+}
+
+// ── Spec compliance: server/discover (2026-07-28) ──
+
+func TestServerDiscover(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error != nil {
+		t.Fatalf("server/discover returned error: %v", resp.Error)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result is not a map")
+	}
+	if result["resultType"] != "complete" {
+		t.Errorf("resultType = %v, want complete", result["resultType"])
+	}
+	versions, ok := result["supportedVersions"].([]any)
+	if !ok || len(versions) < 2 {
+		t.Fatalf("supportedVersions missing or too short: %v", result["supportedVersions"])
+	}
+	caps, ok := result["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatal("capabilities missing")
+	}
+	if _, ok := caps["tools"]; !ok {
+		t.Error("capabilities.tools missing")
+	}
+	if _, ok := caps["logging"]; !ok {
+		t.Error("capabilities.logging missing")
+	}
+	meta, ok := result["_meta"].(map[string]any)
+	if !ok {
+		t.Fatal("_meta missing in discover result")
+	}
+	srvInfo, ok := meta["io.modelcontextprotocol/serverInfo"].(map[string]any)
+	if !ok {
+		t.Fatal("_meta.io.modelcontextprotocol/serverInfo missing")
+	}
+	if srvInfo["name"] != "w1r3hound" {
+		t.Errorf("serverInfo.name = %v, want w1r3hound", srvInfo["name"])
+	}
+	if result["ttlMs"] == nil {
+		t.Error("ttlMs missing")
+	}
+	if result["cacheScope"] != "public" {
+		t.Errorf("cacheScope = %v, want public", result["cacheScope"])
+	}
+	if result["instructions"] == nil || result["instructions"] == "" {
+		t.Error("instructions missing")
 	}
 }
 
@@ -323,6 +383,63 @@ func TestNotificationWithoutJsonrpcSilent(t *testing.T) {
 	}
 }
 
+// ── Spec compliance: resultType and caching ──
+
+func TestToolsListResultType(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	resp := unmarshalResponse(t, raw)
+	result, _ := resp.Result.(map[string]any)
+	if result["resultType"] != "complete" {
+		t.Errorf("resultType = %v, want complete", result["resultType"])
+	}
+	if result["ttlMs"] == nil {
+		t.Error("ttlMs missing from tools/list response")
+	}
+	if result["cacheScope"] != "public" {
+		t.Errorf("cacheScope = %v, want public", result["cacheScope"])
+	}
+}
+
+func TestToolCallResultType(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_modules","arguments":{}}}`)
+	resp := unmarshalResponse(t, raw)
+	result, _ := resp.Result.(map[string]any)
+	if result["resultType"] != "complete" {
+		t.Errorf("resultType = %v, want complete", result["resultType"])
+	}
+}
+
+func TestToolCallContentAnnotations(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"server_info","arguments":{}}}`)
+	resp := unmarshalResponse(t, raw)
+	result, _ := resp.Result.(map[string]any)
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		t.Fatal("content empty")
+	}
+	first, _ := content[0].(map[string]any)
+	ann, ok := first["annotations"].(map[string]any)
+	if !ok {
+		t.Fatal("annotations missing from content block")
+	}
+	audience, ok := ann["audience"].([]any)
+	if !ok || len(audience) == 0 {
+		t.Error("annotations.audience missing or empty")
+	}
+	if ann["priority"] == nil {
+		t.Error("annotations.priority missing")
+	}
+}
+
+func TestPingResultType(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+	resp := unmarshalResponse(t, raw)
+	result, _ := resp.Result.(map[string]any)
+	if result["resultType"] != "complete" {
+		t.Errorf("resultType = %v, want complete", result["resultType"])
+	}
+}
+
 func TestToolsListContainsAllParams(t *testing.T) {
 	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
 	resp := unmarshalResponse(t, raw)
@@ -388,5 +505,120 @@ func TestServerInfoViaRPC(t *testing.T) {
 	}
 	if !strings.Contains(text, "suggest_modules") {
 		t.Error("server_info response missing suggest_modules in tools list")
+	}
+}
+
+// ── Spec compliance: null ID rejection ──
+
+func TestNullIDRejected(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":null,"method":"ping"}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error == nil || resp.Error.Code != -32600 {
+		t.Errorf("null id should return -32600, got %+v", resp.Error)
+	}
+}
+
+// ── Spec compliance: logging/setLevel ──
+
+func TestSetLogLevel(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"logging/setLevel","params":{"level":"warning"}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error != nil {
+		t.Fatalf("logging/setLevel returned error: %v", resp.Error)
+	}
+}
+
+func TestSetLogLevelInvalid(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"logging/setLevel","params":{"level":"bogus"}}`)
+	resp := unmarshalResponse(t, raw)
+	if resp.Error == nil {
+		t.Fatal("expected error for invalid log level")
+	}
+	if resp.Error.Code != -32602 {
+		t.Errorf("error code = %d, want -32602", resp.Error.Code)
+	}
+}
+
+// ── Spec compliance: tool annotations ──
+
+func TestToolAnnotations(t *testing.T) {
+	raw := roundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	resp := unmarshalResponse(t, raw)
+	result, _ := resp.Result.(map[string]any)
+	tools, _ := result["tools"].([]any)
+	for _, tool := range tools {
+		tm, _ := tool.(map[string]any)
+		name := tm["name"].(string)
+		ann, ok := tm["annotations"].(map[string]any)
+		if !ok {
+			t.Errorf("tool %q missing annotations", name)
+			continue
+		}
+		if ann["readOnlyHint"] != true {
+			t.Errorf("tool %q: readOnlyHint should be true", name)
+		}
+		if name == "scan" {
+			if ann["openWorldHint"] != true {
+				t.Errorf("scan tool: openWorldHint should be true")
+			}
+		} else {
+			if ann["openWorldHint"] != false {
+				t.Errorf("tool %q: openWorldHint should be false", name)
+			}
+		}
+		if tm["title"] == nil || tm["title"] == "" {
+			t.Errorf("tool %q missing title", name)
+		}
+	}
+}
+
+// ── Spec compliance: progressToken ──
+
+func TestProgressOnlyWithToken(t *testing.T) {
+	// Scan WITHOUT progressToken should produce NO progress notifications.
+	var out bytes.Buffer
+	msgs := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"scan","arguments":{"target":"127.0.0.1","modules":["headers"],"allow_private":true,"max_duration_seconds":10}}}
+`
+	ServeIO("test-version", strings.NewReader(msgs), &out)
+	if strings.Contains(out.String(), "notifications/progress") {
+		t.Error("progress notifications should NOT be sent without a progressToken")
+	}
+}
+
+func TestProgressWithToken(t *testing.T) {
+	// Scan WITH progressToken should produce progress notifications containing the token.
+	var out bytes.Buffer
+	msgs := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"scan","arguments":{"target":"127.0.0.1","modules":["headers"],"allow_private":true,"max_duration_seconds":10},"_meta":{"progressToken":"tok-42"}}}
+`
+	ServeIO("test-version", strings.NewReader(msgs), &out)
+	output := out.String()
+	if !strings.Contains(output, "notifications/progress") {
+		t.Error("expected progress notifications with progressToken")
+	}
+	if !strings.Contains(output, "tok-42") {
+		t.Error("expected progressToken value in notifications")
+	}
+}
+
+// ── Spec compliance: cancellation ──
+
+func TestCancellationStopsScan(t *testing.T) {
+	// Send a scan, then immediately cancel it. The server should process
+	// the cancellation after the scan starts (async).
+	var out bytes.Buffer
+	msgs := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"scan","arguments":{"target":"192.0.2.1","modules":["portscan"],"allow_private":true,"max_duration_seconds":60}}}
+{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":99,"reason":"user requested"}}
+`
+	ServeIO("test-version", strings.NewReader(msgs), &out)
+	// Just verify it completes without hanging — the cancellation shortens the scan.
+	// The scan should still return a response (possibly partial).
+	if !strings.Contains(out.String(), `"id":99`) {
+		t.Error("expected response for cancelled scan request")
 	}
 }
