@@ -196,7 +196,7 @@ func originGuard(next http.Handler) http.Handler {
 func findRepoRoot() (string, error) {
 	isRoot := func(dir string) bool {
 		for _, name := range []string{"main.go", "go.mod", "internal"} {
-			if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			if _, err := os.Stat(filepath.Join(dir, name)); err != nil { // #nosec G703 — names are hardcoded literals
 				return false
 			}
 		}

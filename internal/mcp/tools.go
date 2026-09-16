@@ -931,11 +931,11 @@ func detectScheme(target string, cfg *core.Config) string {
 		return http.ErrUseLastResponse
 	}
 	if resp, err := client.Head("https://" + target); err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return "https://" + target
 	}
 	if resp, err := client.Head("http://" + target); err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return "http://" + target
 	}
 	return "https://" + target

@@ -247,6 +247,9 @@ func (s *Server) handleSetLogLevel(req *request) {
 		s.sendError(req.ID, -32602, fmt.Sprintf("unknown log level: %q — valid: debug, info, notice, warning, error, critical, alert, emergency", params.Level))
 		return
 	}
+	if level < 0 || level > 7 {
+		level = 0
+	}
 	s.logLevel.Store(int32(level))
 	s.send(req.ID, map[string]any{"resultType": "complete"})
 }
