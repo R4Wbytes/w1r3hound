@@ -109,6 +109,35 @@ func TestChatManagerConfig(t *testing.T) {
 	}
 }
 
+func TestChatDeleteHTTPHandler(t *testing.T) {
+	s := newTestServer(t, "")
+	convo, err := s.chat.CreateConversation("default", "To delete via HTTP")
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	// Verify it exists.
+	req := loopbackReq("GET", "/api/chat/conversations/"+convo.ID, nil)
+	rec := serve(t, s, req)
+	if rec.Code != 200 {
+		t.Fatalf("GET before delete: %d, want 200", rec.Code)
+	}
+
+	// Delete it.
+	req = loopbackReq("DELETE", "/api/chat/conversations/"+convo.ID, nil)
+	rec = serve(t, s, req)
+	if rec.Code != 200 {
+		t.Fatalf("DELETE: %d, body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify it's gone.
+	req = loopbackReq("GET", "/api/chat/conversations/"+convo.ID, nil)
+	rec = serve(t, s, req)
+	if rec.Code != 404 {
+		t.Fatalf("GET after delete: %d, want 404", rec.Code)
+	}
+}
+
 func TestValidConvoID(t *testing.T) {
 	tests := []struct {
 		id   string

@@ -1337,10 +1337,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (t.closest("#btn-console-cancel")) { if (state.consoleScanId) cancelScan(state.consoleScanId); return; }
     if (t.closest("#btn-new-chat")) { createNewChat(); return; }
     if (t.closest("#btn-chat-send")) { sendChatMessage(); return; }
-    const convoItem = t.closest(".chat-convo-item");
-    if (convoItem) { loadChatMessages(convoItem.dataset.id); return; }
     const convoDelete = t.closest(".chat-convo-delete");
     if (convoDelete) { e.stopPropagation(); deleteChatConvo(convoDelete.dataset.id); return; }
+    const convoItem = t.closest(".chat-convo-item");
+    if (convoItem) { loadChatMessages(convoItem.dataset.id); return; }
   });
 
   // Modal / panel backdrop
