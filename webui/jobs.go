@@ -153,7 +153,7 @@ func (j *Job) refreshReportMeta() {
 type ScanSummary struct {
 	ID        string         `json:"id"`
 	Target    string         `json:"target"`
-	Owner     string         `json:"-"` // server-side only: used for per-user access control
+	Owner     string         `json:"-"`                // server-side only: used for per-user access control
 	Source    string         `json:"source,omitempty"` // "cli" or "mcp"
 	Status    JobStatus      `json:"status"`
 	CreatedAt string         `json:"created_at,omitempty"`
