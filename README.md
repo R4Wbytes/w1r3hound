@@ -216,14 +216,19 @@ go build -o webui/w1r3hound-webui ./webui
 ### Pages
 
 - **Overview** — aggregate stats (scans, findings, targets, running now), a
-  findings-by-severity breakdown, a scan-status donut, and recent scans, all
-  derived from the live scan list.
+  findings-by-severity breakdown, a scan-status donut, workflow cards (one-click
+  pre-filled scan configs from MCP prompts), and recent scans, all derived from
+  the live scan list.
 - **Scans** — real scan history with status, findings count, timing, and
   per-scan actions (open console, view findings, cancel).
 - **Findings** — vulnerabilities parsed from each scan's `report.json`, shown
   in a severity-styled table with a slide-in detail panel (module, WSTG ID,
   description, raw data). Filter by severity/triage/text, tag a local triage
   status per finding, and export the report to CSV.
+- **AI Chat** — conversational interface backed by the Claude API. The LLM can
+  call `scan`, `list_modules`, `suggest_modules`, and `server_info` via the
+  in-process MCP bridge. Streaming responses with tool-call cards. API key is
+  admin-only and stored server-side. Configure in **Settings → AI Chat**.
 - **Console** — the scan launcher and live terminal. The **New scan** modal
   exposes the CLI options the backend validates (`-t`, `-m` with all 21
   modules grouped by category and all/none/passive presets, `-c`, `-p`, `-w`,
@@ -237,8 +242,9 @@ go build -o webui/w1r3hound-webui ./webui
 - **Account** — the signed-in user's profile, a change-password form, sign-out,
   and (for administrators) user management: create/delete users, reset
   passwords, and unlock locked-out accounts.
-- **Settings** — legacy open-mode auth token, the authorized-use notice,
-  report-storage info, and a control to clear local triage state.
+- **Settings** — AI Chat configuration (Anthropic API key, model, max tokens),
+  legacy open-mode auth token, the authorized-use notice, report-storage info,
+  and a control to clear local triage state.
 
 Reports and captured logs are written under `webui/results/`; custom subdomain
 wordlists must be placed in `webui/wordlists/` (paths outside it are rejected).
@@ -367,8 +373,12 @@ w1r3hound/
 │   ├── password.go                  # PBKDF2-HMAC-SHA256 hashing + policy
 │   ├── jobs.go                      # scan queue, worker pool, SSE broadcast
 │   ├── validate.go                  # module catalog + request validation
+│   ├── chat.go                      # AI Chat: LLM conversations with tool use
+│   ├── mcpbridge.go                 # in-process MCP bridge (JSON-RPC over pipes)
+│   ├── workflows.go                 # MCP prompts → workflow cards
 │   ├── run.sh                       # build CLI + GUI and serve on :8737
 │   ├── auth/                        # user store (users.json, 0600) — runtime
+│   ├── chats/                       # AI Chat conversations + config (runtime)
 │   ├── results/                     # generated reports & logs (runtime)
 │   ├── wordlists/                   # user-supplied wordlists (runtime)
 │   └── static/                      # single-page dashboard UI

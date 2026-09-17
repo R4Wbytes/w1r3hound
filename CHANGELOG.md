@@ -12,6 +12,25 @@ each landed with a regression test.
 
 ### Added
 
+- **AI Chat** (`webui/chat.go`): conversational interface backed by the Claude
+  API with tool use. The LLM can call `scan`, `list_modules`,
+  `suggest_modules`, and `server_info` via the in-process MCP bridge.
+  Conversations are persisted to `webui/chats/`; API key is admin-only and
+  stored server-side (never sent to the browser). Streaming SSE responses with
+  tool-call cards in the UI.
+- **MCP Bridge** (`webui/mcpbridge.go`): in-process JSON-RPC 2.0 bridge from
+  the webui to the MCP server. Enables MCP-sourced scans (no subprocess) and
+  tool calls from AI Chat. Multiplexes concurrent requests by ID with
+  per-scan progress callbacks.
+- **Workflows** (`webui/workflows.go`): MCP prompts surfaced as clickable
+  workflow cards on the Overview page. Each card pre-fills the New Scan modal
+  with workflow-specific defaults (modules, ports, rate, concurrency).
+- **MCP-sourced scans**: the New Scan modal gains a "MCP in-process" checkbox.
+  MCP scans run via the bridge (no subprocess), stream progress to the console,
+  and write `.json`/`.md` reports identically to CLI scans. Scan list shows an
+  `MCP` badge for bridge-sourced scans.
+- **`GenerateMarkdown` exported** (`internal/report/report.go`): renamed from
+  `generateMarkdown` so the webui can write `.md` reports for MCP scans.
 - **MCP server for AI agent integration** (`internal/mcp/`, `--mcp` flag):
   JSON-RPC 2.0 over stdio server exposing all 21 recon modules as tools
   (protocol version `2025-06-18`). Zero external dependencies.

@@ -29,7 +29,7 @@ func GenerateReport(r *core.ReconReport, outputBase string, log *core.Logger) {
 
 	// ── Markdown Summary ──
 	mdPath := outputBase + ".md"
-	md := generateMarkdown(snap)
+	md := GenerateMarkdown(snap)
 	if err := os.WriteFile(mdPath, []byte(md), 0600); err != nil {
 		log.Error("Failed to write Markdown report: %v", err)
 	} else {
@@ -83,7 +83,7 @@ var mdEscaper = strings.NewReplacer(
 	"!", "\\!",
 )
 
-func generateMarkdown(r core.ReportData) string {
+func GenerateMarkdown(r core.ReportData) string {
 	var sb strings.Builder
 
 	sb.WriteString("# w1r3hound — System Profile Report\n\n")

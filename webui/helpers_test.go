@@ -33,7 +33,7 @@ func managerForTest(t *testing.T) *Manager {
 	dir := t.TempDir()
 	results := filepath.Join(dir, "results")
 	wordlists := filepath.Join(dir, "wordlists")
-	m, err := NewManager(dir, os.Args[0], results, wordlists)
+	m, err := NewManager(dir, os.Args[0], results, wordlists, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -75,7 +75,7 @@ func newTestServer(t *testing.T, token string) *server {
 	if _, err := os.Stat(binPath); err != nil {
 		binPath = os.Args[0]
 	}
-	m, err := NewManager(dir, binPath, results, wordlists)
+	m, err := NewManager(dir, binPath, results, wordlists, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -83,7 +83,11 @@ func newTestServer(t *testing.T, token string) *server {
 	if err != nil {
 		t.Fatalf("NewAuthManager: %v", err)
 	}
-	return &server{mgr: m, auth: auth, token: token}
+	chat, err := NewChatManager(filepath.Join(dir, "chats"), nil)
+	if err != nil {
+		t.Fatalf("NewChatManager: %v", err)
+	}
+	return &server{mgr: m, auth: auth, chat: chat, token: token}
 }
 
 // newAuthTestServer returns a server whose login panel is active, seeded with

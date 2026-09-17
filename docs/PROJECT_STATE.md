@@ -7,7 +7,8 @@ canonical project.
 ## 1. Architecture
 
 w1r3hound is a single-binary offensive-recon engine (the CLI) plus a
-localhost-only web console that drives that same binary as a subprocess.
+localhost-only web console that drives scans as subprocesses **or** in-process
+via the MCP bridge.
 
 ```mermaid
 flowchart LR
@@ -21,14 +22,24 @@ flowchart LR
   subgraph gui [Web console - webui]
     Srv["main.go - HTTP server, routes, CSP, originGuard, token"]
     Jobs["jobs.go - queue, 2 workers, SSE broadcast"]
-    Val["validate.go - module catalog + request validation + buildArgs"]
+    Val["validate.go - module catalog + request validation + buildArgs/buildMCPParams"]
+    Bridge["mcpbridge.go - in-process MCP bridge (JSON-RPC over pipes)"]
+    Chat["chat.go - AI Chat: LLM conversations with tool use"]
+    WF["workflows.go - MCP prompts → workflow cards"]
     Static["static/ - dashboard SPA (index.html, css, js)"]
     Srv --> Jobs
     Srv --> Val
+    Srv --> Bridge
+    Srv --> Chat
+    Srv --> WF
     Srv --> Static
   end
   Static -->|"fetch + SSE"| Srv
   Jobs -->|"exec.CommandContext (no shell)"| Main
+  Jobs -->|"in-process via bridge"| Bridge
+  Bridge -->|"JSON-RPC 2.0 io.Pipe"| MCP2["internal/mcp (ServeIO)"]
+  MCP2 -->|"calls modules directly"| Core
+  Chat -->|"CallTool"| Bridge
   Jobs -->|"reads"| Results[("webui/results/*.json/.md/.log")]
   Rep -->|"writes"| Results
 ```
@@ -49,10 +60,19 @@ engine in-process (no subprocess) with SSRF guard ON by default. Supports async
 scan cancellation, progress notifications, prompts, completions, and structured
 output (protocol version `2025-06-18`).
 
+The webui now also embeds an **MCP bridge** (`mcpbridge.go`): an in-process
+JSON-RPC 2.0 connection to the same MCP server via `io.Pipe`. This enables two
+new paths: (1) MCP-sourced scans (`source: "mcp"`) that run without spawning a
+subprocess, and (2) the **AI Chat** feature (`chat.go`) where an LLM calls
+w1r3hound tools via the bridge. Workflow cards (`workflows.go`) surface MCP
+prompts as one-click scan presets on the Overview page.
+
 Key trust boundary: the browser talks only to the loopback Go server; the Go
-server spawns the CLI with a validated `[]string` argv (never a shell). The MCP
-server runs in-process with the engine. The CLI (and MCP server) are the only
-components that touch the network target.
+server spawns the CLI with a validated `[]string` argv (never a shell) **or**
+runs scans in-process via the MCP bridge (same validation). AI Chat makes
+outbound HTTPS calls to the Anthropic API only — the API key is stored
+server-side and never sent to the browser. The CLI, MCP server, and MCP bridge
+are the only components that touch the network target.
 
 ## 2. Build & health
 
@@ -100,12 +120,13 @@ active modules.
 ## 5. webui API surface
 
 Routes registered in [webui/main.go](../webui/main.go) (`s.handler()`, lines
-125-147):
+~147-180):
 
 Scan / report:
 - `GET /` (embedded `static/`)
 - `GET /api/modules`
-- `POST /api/scan`
+- `GET /api/workflows`
+- `POST /api/scan` (accepts `source: "mcp"` for bridge-backed scans)
 - `GET /api/scans`, `GET /api/scans/{id}`
 - `POST /api/scans/{id}/cancel`
 - `GET /api/scans/{id}/events` (SSE; exempt from the CSP header)
@@ -118,6 +139,12 @@ Login panel (added with `auth.go`; gated by `authGate` when enabled):
 - Admin: `GET/POST /api/auth/users`, `DELETE /api/auth/users/{username}`,
   `POST /api/auth/users/{username}/reset`, `POST /api/auth/users/{username}/unlock`
 
+AI Chat:
+- `GET /api/chat/config`, `POST /api/chat/config` (admin-only: set API key/model)
+- `GET /api/chat/conversations`, `POST /api/chat/conversations`
+- `GET /api/chat/conversations/{id}`, `DELETE /api/chat/conversations/{id}`
+- `POST /api/chat/conversations/{id}/message` (SSE streaming response)
+
 When the login panel is enabled, `authGate` requires a session on **every**
 `/api/*` route except `status`/`login`/`setup` (superseding the legacy
 open-mode `W1R3HOUND_UI_TOKEN`, which only gates mutations).
@@ -128,12 +155,19 @@ Concurrency/limits: worker pool `numWorkers=2`, `queueCapacity=32`,
 ## 6. Frontend (reskin)
 
 Dashboard SPA under [webui/static/](../webui/static/):
-- `index.html` — sidebar shell, 6 pages: Overview, Scans (`data-page="audits"`),
-  Findings, Console, Account, Settings. (The New-scan modal now also carries the
-  CLI-parity **Advanced options** section — see [CLI_PARITY.md](CLI_PARITY.md).)
-- `css/styles.css` — dark design system.
-- `js/api.js` — backend client, severity normalization, SSE/log helpers.
-- `js/app.js` — SPA controller (all pages, scan modal, detail panel, toasts).
+- `index.html` — sidebar shell, 7 pages: Overview, Scans (`data-page="audits"`),
+  Findings, Console, AI Chat, Account, Settings. (The New-scan modal now also
+  carries the CLI-parity **Advanced options** section — see
+  [CLI_PARITY.md](CLI_PARITY.md).) Overview includes workflow cards
+  (MCP prompts as one-click scan presets). Scan list shows an MCP badge for
+  bridge-sourced scans. Settings includes AI Chat configuration (API key,
+  model, max tokens).
+- `css/styles.css` — dark design system (source badges, workflow cards, chat
+  layout, responsive breakpoints).
+- `js/api.js` — backend client, severity normalization, SSE/log helpers,
+  workflow and chat API endpoints.
+- `js/app.js` — SPA controller (all pages, scan modal, detail panel, toasts,
+  AI Chat with streaming SSE, workflow prefill).
 
 Client-side state (browser `localStorage`): `w1r3hound_token` (auth token),
 `w1r3hound_triage` (per-finding triage labels; UI-only, not persisted server-side).
@@ -142,22 +176,20 @@ inline `style="..."` attributes (allowed by `style-src 'unsafe-inline'`).
 
 ## 7. Automated test coverage (current)
 
-> **Updated 2026-09-16 (MCP server).** The snapshot below is the original
-> engine-only baseline; the tree now has **40 `_test.go` files, ~274 `Test` +
-> 3 `Fuzz` + 3 `Benchmark` functions** spanning the engine, the webui, *and*
-> the MCP server (`internal/mcp/server_test.go` 47 tests,
-> `internal/mcp/tools_test.go` 44 tests — protocol dispatch, tool execution,
-> prompts, completions, scan integration, SSRF guard, cancellation,
-> progress notifications, race detection). Plus a hermetic Playwright smoke
-> under `webui/e2e/` and a CI workflow at `.github/workflows/ci.yml`.
-> See §7a for the reconciled gaps.
+> **Updated 2026-09-16 (AI Chat + MCP bridge + workflows).** The tree now has
+> **57 `_test.go` files, ~319 `Test` + 6 `Fuzz` + 5 `Benchmark` functions**
+> spanning the engine, the webui, and the MCP server. New webui test files:
+> `chat_test.go` (CRUD, config persistence, conversation ID validation),
+> `mcpbridge_test.go` (bridge init, CallTool, Prompts, GetPrompt, invalid-target
+> scan, Close), `workflows_test.go` (enrichment, defaults, filtering, edge cases).
+> Plus a hermetic Playwright smoke under `webui/e2e/` and a CI workflow at
+> `.github/workflows/ci.yml`. See §7a for the reconciled gaps.
 >
-> Previous update: 2026-08-27 (QA rounds 13–18). The original count was
-> **38 `_test.go` files, ~183 `Test` +
-> 3 `Fuzz` + 3 `Benchmark` functions** spanning the engine *and* the webui
-> (validation, parity, transport guard, CSP, jobs/SSE, login/RBAC/session,
-> per-user isolation), plus a hermetic Playwright smoke under `webui/e2e/` and a
-> CI workflow at `.github/workflows/ci.yml`. See §7a for the reconciled gaps.
+> Previous update: 2026-09-16 (MCP server). Count was **40 `_test.go` files,
+> ~274 `Test` + 3 `Fuzz` + 3 `Benchmark` functions**.
+>
+> Previous update: 2026-08-27 (QA rounds 13–18). Count was
+> **38 `_test.go` files, ~183 `Test` + 3 `Fuzz` + 3 `Benchmark` functions**.
 
 17 test files, ~97 `Test`/`Fuzz`/`Benchmark` functions, all under the engine:
 
@@ -192,7 +224,7 @@ The three gaps above are **closed**:
   password-change enforcement + F-18 pre-auth login throttle; see
   SECURITY_ASSESSMENT §9).
 - **Frontend — done (light).** `csp_hygiene_test.go` guards the strict CSP;
-  the Playwright smoke (`webui/e2e/`) covers CSP-clean load, six-page nav,
+  the Playwright smoke (`webui/e2e/`) covers CSP-clean load, seven-page nav,
   same-origin `/api/modules`, the authorized gate and the parity Advanced
   options. It runs a hermetic open-mode server (`serve-hermetic.sh`).
 - **CI — present.** `.github/workflows/ci.yml` mirrors `make ci`
@@ -211,3 +243,10 @@ The three gaps above are **closed**:
   under `webui/wordlists/` (path-confined by `resolveWordlist`).
 - The CLI defaults to `-skip-tls-verify=true` and `-block-private-egress=false`;
   neither is currently reachable from the GUI (see [CLI_PARITY.md](CLI_PARITY.md)).
+- AI Chat stores its Anthropic API key in `webui/chats/config.json` (`0600`);
+  setting it requires admin role. The key is never sent to the browser.
+  Conversations are persisted as per-conversation JSON files under
+  `webui/chats/` (gitignored). The LLM (outbound HTTPS to
+  `api.anthropic.com`) can call w1r3hound tools via the MCP bridge.
+- MCP bridge scans (`source: "mcp"`) bypass subprocess execution and run
+  in-process; the same validation (`buildMCPParams`) applies.

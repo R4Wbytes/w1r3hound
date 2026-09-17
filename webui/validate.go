@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -78,6 +79,7 @@ type ScanRequest struct {
 	Output      string   `json:"output"`
 	Verbose     bool     `json:"verbose"`
 	Authorized  bool     `json:"authorized"`
+	Source      string   `json:"source"` // "cli" (default) or "mcp"
 
 	// ── CLI-parity advanced options (see docs/CLI_PARITY.md) ──
 	DirWordlist        string   `json:"dir_wordlist"`         // -dir-wordlist, confined to wordlistsDir
@@ -460,4 +462,149 @@ func buildArgs(req *ScanRequest, wordlistsDir, resultsDir string) ([]string, str
 	}
 	args = append(args, "-o", filepath.Join(resultsDir, base))
 	return args, base, nil
+}
+
+// buildMCPParams validates the request the same way buildArgs does but
+// produces an MCPScanParams struct for the in-process MCP bridge instead of
+// a CLI argv slice. The output base name is generated identically.
+func buildMCPParams(req *ScanRequest, wordlistsDir, resultsDir string) (MCPScanParams, string, error) {
+	if !req.Authorized {
+		return MCPScanParams{}, "", fmt.Errorf("you must confirm you are authorized to scan the target")
+	}
+	if err := validateTarget(req.Target); err != nil {
+		return MCPScanParams{}, "", err
+	}
+	mods, err := normalizeModules(req.Modules)
+	if err != nil {
+		return MCPScanParams{}, "", err
+	}
+	if req.Concurrency < 0 || req.Concurrency > 500 {
+		return MCPScanParams{}, "", fmt.Errorf("concurrency out of range (1-500)")
+	}
+	if req.Rate < 0 || req.Rate > 10000 {
+		return MCPScanParams{}, "", fmt.Errorf("rate out of range (0-10000)")
+	}
+	if req.TimeoutSec < 0 || req.TimeoutSec > 1800 {
+		return MCPScanParams{}, "", fmt.Errorf("timeout out of range (0-1800 s)")
+	}
+	switch req.Ports {
+	case "", "top100", "1-1024", "full":
+	default:
+		return MCPScanParams{}, "", fmt.Errorf("ports must be top100, 1-1024 or full")
+	}
+	if len(req.UserAgent) > 256 || strings.ContainsAny(req.UserAgent, "\r\n") {
+		return MCPScanParams{}, "", fmt.Errorf("invalid user-agent")
+	}
+	wordlist, err := resolveWordlist(wordlistsDir, req.Wordlist)
+	if err != nil {
+		return MCPScanParams{}, "", err
+	}
+	dirWordlist, err := resolveWordlist(wordlistsDir, req.DirWordlist)
+	if err != nil {
+		return MCPScanParams{}, "", err
+	}
+	if req.DirExt != "" && !dirExtRe.MatchString(req.DirExt) {
+		return MCPScanParams{}, "", fmt.Errorf("invalid dir-ext (letters, numbers, dot, comma, tilde, underscore, hyphen; max 256)")
+	}
+	headers, err := validateHeaders(req.Headers)
+	if err != nil {
+		return MCPScanParams{}, "", err
+	}
+	if req.Resolver != "" && !validResolver(req.Resolver) {
+		return MCPScanParams{}, "", fmt.Errorf("invalid resolver (want a bare IP or ip:port, not a hostname)")
+	}
+	resolversFile, err := resolveWordlist(wordlistsDir, req.Resolvers)
+	if err != nil {
+		return MCPScanParams{}, "", err
+	}
+	if req.WaybackLimit < 0 || req.WaybackLimit > 100000 {
+		return MCPScanParams{}, "", fmt.Errorf("wayback-limit out of range (0-100000)")
+	}
+	if req.CrawlPages < 0 || req.CrawlPages > 5000 {
+		return MCPScanParams{}, "", fmt.Errorf("crawl-pages out of range (0-5000)")
+	}
+	if req.JSFiles < 0 || req.JSFiles > 2000 {
+		return MCPScanParams{}, "", fmt.Errorf("js-files out of range (0-2000)")
+	}
+
+	base := req.Output
+	if base != "" {
+		if !outputNameRe.MatchString(base) || strings.Contains(base, "..") {
+			return MCPScanParams{}, "", fmt.Errorf("invalid output name (letters, numbers, dot, hyphen and underscore; no '..')")
+		}
+	} else {
+		base = fmt.Sprintf("w1r3hound_%s_%s", sanitizeForFilename(domainOfTarget(req.Target)),
+			time.Now().UTC().Format("20060102_150405"))
+		if _, err := os.Stat(filepath.Join(resultsDir, base+".json")); err == nil {
+			suffix := make([]byte, 2)
+			if _, err := rand.Read(suffix); err == nil {
+				base += "_" + hex.EncodeToString(suffix)
+			}
+		}
+	}
+
+	var headerMap map[string]string
+	if len(headers) > 0 {
+		headerMap = make(map[string]string, len(headers))
+		for _, h := range headers {
+			i := strings.IndexByte(h, ':')
+			headerMap[h[:i]] = strings.TrimPrefix(h[i+1:], " ")
+		}
+	}
+
+	var resolverIPs []string
+	if resolversFile != "" {
+		var readErr error
+		resolverIPs, readErr = readResolverIPs(resolversFile)
+		if readErr != nil {
+			return MCPScanParams{}, "", fmt.Errorf("could not read resolvers file: %w", readErr)
+		}
+	}
+
+	params := MCPScanParams{
+		Target:         req.Target,
+		Modules:        mods,
+		Passive:        req.Passive,
+		Concurrency:    req.Concurrency,
+		TimeoutSeconds: req.TimeoutSec,
+		Ports:          req.Ports,
+		RateLimit:      req.Rate,
+		Verbose:        req.Verbose,
+		UserAgent:      req.UserAgent,
+		Headers:        headerMap,
+		Wordlist:       wordlist,
+		DirWordlist:    dirWordlist,
+		DirExtensions:  req.DirExt,
+		SkipTLSVerify:  req.SkipTLSVerify,
+		Resolver:       req.Resolver,
+		Resolvers:      resolverIPs,
+		WaybackLimit:   req.WaybackLimit,
+		CrawlPages:     req.CrawlPages,
+		JSFiles:        req.JSFiles,
+	}
+
+	return params, base, nil
+}
+
+// readResolverIPs reads a resolver list file and returns validated IP/ip:port
+// entries, skipping blank lines and comments.
+func readResolverIPs(path string) ([]string, error) {
+	f, err := os.Open(path) // #nosec G304 — path is validated by resolveWordlist (confined to wordlistsDir)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var out []string
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !validResolver(line) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out, sc.Err()
 }

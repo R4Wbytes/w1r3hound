@@ -18,3 +18,9 @@ w1r3hound_*.md
 
 # Hermes agent local state (verification recipes, environment cache)
 /.hermes/
+
+# Claude Code local state (worktrees, plans, memory)
+/.claude/
+
+# Bundled wordlists (downloadable; see webui/wordlists/ for runtime uploads)
+/wordlists/

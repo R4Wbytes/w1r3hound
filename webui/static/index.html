@@ -79,6 +79,7 @@
           <li><button class="sidebar-nav-item" data-page="audits"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg></span><span>Scans</span></button></li>
           <li><button class="sidebar-nav-item" data-page="findings"><span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4"/><circle cx="12" cy="16" r="0.5" fill="currentColor"/></svg></span><span>Findings</span></button></li>
           <li><button class="sidebar-nav-item" data-page="console"><span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 8l4 4-4 4"/><line x1="13" y1="16" x2="17" y2="16"/></svg></span><span>Console</span></button></li>
+          <li><button class="sidebar-nav-item" data-page="chat"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></span><span>AI Chat</span></button></li>
         </ul>
       </div>
 
@@ -225,6 +226,11 @@
           </div>
         </div>
 
+        <div class="card" id="wf-section">
+          <div class="card-title">Workflows</div>
+          <div class="wf-grid" id="wf-grid"></div>
+        </div>
+
         <div class="card">
           <div class="recent-audits-header"><div class="card-title">Recent scans</div><a class="view-all-link" data-nav="audits">View all →</a></div>
           <div id="recent-scans-body"></div>
@@ -352,6 +358,28 @@
             <a class="btn-mini" id="dl-md" href="#" hidden>⬇ .md</a>
           </div>
           <div class="console-terminal" id="console-terminal"></div>
+        </div>
+      </div>
+
+      <!-- ═══ AI CHAT ═══ -->
+      <div id="page-chat" class="page-view">
+        <div class="chat-layout">
+          <div class="chat-sidebar">
+            <button class="btn btn-accent btn-block" id="btn-new-chat">+ New Chat</button>
+            <div class="chat-convo-list" id="chat-convo-list"></div>
+          </div>
+          <div class="chat-main">
+            <div class="chat-messages" id="chat-messages">
+              <div class="chat-empty" id="chat-empty">
+                <p>Select a conversation or start a new one.</p>
+                <p class="dim">AI Chat lets you interact with w1r3hound tools through natural language.</p>
+              </div>
+            </div>
+            <div class="chat-input-bar" id="chat-input-bar" hidden>
+              <textarea class="chat-textarea" id="chat-textarea" placeholder="Ask w1r3hound something..." rows="1"></textarea>
+              <button class="btn btn-accent chat-send" id="btn-chat-send" disabled>Send</button>
+            </div>
+          </div>
         </div>
       </div>
 

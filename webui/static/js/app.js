@@ -36,7 +36,12 @@ document.addEventListener("DOMContentLoaded", () => {
     serverOk: true,
     auth: { enabled: false, user: null },
     users: [],
+    workflows: [],
     booted: false,
+    chatConvoId: null,
+    chatConvos: [],
+    chatMessages: [],
+    chatStreaming: false,
   };
 
   function loadTriage() {
@@ -104,6 +109,7 @@ document.addEventListener("DOMContentLoaded", () => {
       case "audits": renderScans(); break;
       case "findings": renderFindings(); break;
       case "console": renderConsole(); break;
+      case "chat": renderChat(); break;
       case "account": renderAccount(); break;
       case "settings": renderSettings(); break;
     }
@@ -186,6 +192,7 @@ document.addEventListener("DOMContentLoaded", () => {
     $("#metric-success").textContent = (a.done + a.failed) > 0 ? a.successRate + "%" : "—";
 
     renderRecentScans();
+    renderWorkflows();
   }
 
   function renderDonut(a) {
@@ -230,6 +237,49 @@ document.addEventListener("DOMContentLoaded", () => {
       </div>`).join("");
   }
 
+  /* ── Workflow cards ─────────────────────────────────── */
+  const wfIcons = {
+    target: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
+    eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>',
+    link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>',
+    radar: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0110 10"/><path d="M12 2a10 10 0 016.93 4"/><line x1="12" y1="12" x2="12" y2="2"/></svg>',
+    shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+    microscope: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M12 12v6"/><line x1="8" y1="22" x2="16" y2="22"/><line x1="12" y1="18" x2="12" y2="22"/></svg>',
+  };
+
+  function renderWorkflows() {
+    const box = $("#wf-grid");
+    if (!box || !state.workflows.length) { if (box) box.innerHTML = ""; return; }
+    box.innerHTML = state.workflows.map((w) => `
+      <div class="wf-card" data-wf='${esc(JSON.stringify(w.defaults || {}))}'>
+        <div class="wf-icon">${wfIcons[w.icon] || wfIcons.target}</div>
+        <div class="wf-title">${esc(w.title)}</div>
+        <div class="wf-desc">${esc(w.description)}</div>
+      </div>`).join("");
+  }
+
+  function prefillScanModal(defaults) {
+    openScanModal();
+    setTimeout(() => {
+      if (defaults.source === "mcp") { const cb = $("#scan-mcp"); if (cb) { cb.checked = true; cb.dispatchEvent(new Event("change")); } }
+      if (defaults.passive != null) { const cb = $("#scan-passive"); if (cb) cb.checked = !!defaults.passive; }
+      if (defaults.concurrency) { const el = $("#scan-concurrency"); if (el) el.value = defaults.concurrency; }
+      if (defaults.rate) { const el = $("#scan-rate"); if (el) el.value = defaults.rate; }
+      if (defaults.ports) { const el = $("#scan-ports"); if (el) el.value = defaults.ports; }
+      if (defaults.timeout_sec) { const el = $("#scan-timeout"); if (el) el.value = defaults.timeout_sec; }
+      if (defaults.dir_ext) { const el = $("#scan-dir-ext"); if (el) el.value = defaults.dir_ext; }
+      if (defaults.wayback_limit) { const el = $("#scan-wayback"); if (el) el.value = defaults.wayback_limit; }
+      if (defaults.crawl_pages) { const el = $("#scan-crawl"); if (el) el.value = defaults.crawl_pages; }
+      if (defaults.js_files) { const el = $("#scan-js"); if (el) el.value = defaults.js_files; }
+      if (defaults.modules && state.modules.length) {
+        setAllModules(false);
+        const mods = new Set(Array.isArray(defaults.modules) ? defaults.modules : [defaults.modules]);
+        $$(".mod-check").forEach((cb) => { if (mods.has(cb.value)) cb.checked = true; });
+        updateModulesCount();
+      }
+    }, 50);
+  }
+
   /* ══════════════════════════════════════════════════════
      SCANS
      ══════════════════════════════════════════════════════ */
@@ -264,7 +314,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <div class="audit-row-main">
           <div class="audit-row-target">${esc(s.target || s.id)}</div>
           <div class="audit-row-meta">
-            ${Utils.scanStatusBadge(s.status)}
+            ${Utils.scanStatusBadge(s.status)}${s.source === "mcp" ? ' <span class="source-badge source-mcp">MCP</span>' : ""}
             <span class="audit-row-findings">${s.has_report ? (s.total_findings + " findings") : "no report"}</span>
             <span>${esc(Utils.fmtDate(s.started_at || s.created_at))}</span>
             <span>${esc(Utils.fmtDuration(s.started_at, s.ended_at))}</span>
@@ -633,6 +683,7 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
 
         <div class="form-group form-checks">
+          <label class="form-check"><input type="checkbox" id="scan-mcp"> <span>MCP in-process <code>source: mcp</code> — run scan via the MCP bridge (in-process, no subprocess)</span></label>
           <label class="form-check"><input type="checkbox" id="scan-passive" checked> <span>Passive mode <code>-passive</code> — no active traffic; active modules are skipped</span></label>
           <label class="form-check"><input type="checkbox" id="scan-verbose"> <span>Verbose <code>-v</code></span></label>
         </div>
@@ -690,6 +741,11 @@ document.addEventListener("DOMContentLoaded", () => {
     $("#scan-cancel").addEventListener("click", closeModal);
     $("#scan-launch").addEventListener("click", launchScan);
     $("#scan-target").addEventListener("keydown", (e) => { if (e.key === "Enter") launchScan(); });
+    $("#scan-mcp").addEventListener("change", (e) => {
+      const tf = $("#scan-timeout");
+      tf.max = e.target.checked ? 1800 : 300;
+      if (parseInt(tf.value, 10) > parseInt(tf.max, 10)) tf.value = tf.max;
+    });
   }
 
   function modulesPickerHTML() {
@@ -791,6 +847,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Only send skip_tls_verify when the operator opts into verification; a
     // missing field means "use the CLI default" (skip). See docs/CLI_PARITY.md.
     if ($("#scan-verify-tls").checked) body.skip_tls_verify = false;
+    if ($("#scan-mcp").checked) body.source = "mcp";
 
     const btn = $("#scan-launch");
     btn.disabled = true;
@@ -851,6 +908,26 @@ document.addEventListener("DOMContentLoaded", () => {
       </div>
 
       <div class="settings-section">
+        <h3 class="settings-section-title">AI Chat</h3>
+        <div class="settings-row">
+          <div><div class="settings-label">Anthropic API key</div><div class="settings-desc">Required for the AI Chat feature. Your key is stored on the server, never sent to the browser.</div></div>
+          <div class="settings-control"><input type="password" id="set-chat-apikey" class="form-input mono" placeholder="sk-ant-..." autocomplete="off"></div>
+        </div>
+        <div class="settings-row">
+          <div><div class="settings-label">Model</div><div class="settings-desc">Claude model to use for chat.</div></div>
+          <div class="settings-control"><input type="text" id="set-chat-model" class="form-input mono" placeholder="claude-sonnet-4-20250514"></div>
+        </div>
+        <div class="settings-row">
+          <div><div class="settings-label">Max tokens</div><div class="settings-desc">Maximum response tokens per LLM call.</div></div>
+          <div class="settings-control"><input type="number" id="set-chat-maxtokens" class="form-input mono" placeholder="4096" min="256" max="32768" step="256"></div>
+        </div>
+        <div class="settings-row">
+          <div></div>
+          <div class="settings-control"><button class="btn btn-accent" id="btn-save-chat-config">Save AI settings</button> <span id="chat-config-status" class="dim"></span></div>
+        </div>
+      </div>
+
+      <div class="settings-section">
         <h3 class="settings-section-title">About</h3>
         <div class="settings-row">
           <div><div class="settings-label">w1r3hound</div><div class="settings-desc">Wiretap-grade offensive recon · OWASP WSTG · dependency-free local GUI.</div></div>
@@ -864,6 +941,27 @@ document.addEventListener("DOMContentLoaded", () => {
       state.triage = {}; saveTriage();
       toast("Local triage state cleared", "info");
       if (state.currentPage === "findings") renderFindings();
+    });
+    // Load current chat config
+    API.chatConfig().then(cfg => {
+      if (cfg.model) $("#set-chat-model").value = cfg.model;
+      if (cfg.max_tokens) $("#set-chat-maxtokens").value = cfg.max_tokens;
+      $("#chat-config-status").textContent = cfg.configured ? "✓ Key set" : "Not configured";
+    }).catch(() => {});
+    $("#btn-save-chat-config").addEventListener("click", async () => {
+      try {
+        const body = {};
+        const key = $("#set-chat-apikey").value.trim();
+        if (key) body.api_key = key;
+        const model = $("#set-chat-model").value.trim();
+        if (model) body.model = model;
+        const mt = parseInt($("#set-chat-maxtokens").value, 10);
+        if (mt > 0) body.max_tokens = mt;
+        const res = await API.setChatConfig(body);
+        $("#set-chat-apikey").value = "";
+        $("#chat-config-status").textContent = res.configured ? "✓ Key set" : "Not configured";
+        toast("AI Chat settings saved", "success");
+      } catch (err) { toast("Failed: " + err.message, "error"); }
     });
   }
 
@@ -907,10 +1005,11 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!state.booted) {
       state.booted = true;
       try { state.modules = await API.modules(); } catch (_) { /* shown on modal open */ }
+      try { state.workflows = await API.workflows(); } catch (_) {}
     }
     await refreshScans();
     const initPage = (window.location.hash.replace("#", "") || "overview");
-    const valid = ["overview", "audits", "findings", "console", "account", "settings"];
+    const valid = ["overview", "audits", "findings", "console", "chat", "account", "settings"];
     navigateTo(valid.includes(initPage) ? initPage : "overview");
     if (state.auth.user && state.auth.user.must_change_password) {
       toast("Please change your administrator-set password.", "info");
@@ -1204,6 +1303,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const t = e.target;
 
     if (t.closest(".js-new-scan")) { e.preventDefault(); openScanModal(); return; }
+    const wfCard = t.closest(".wf-card");
+    if (wfCard) { try { prefillScanModal(JSON.parse(wfCard.dataset.wf)); } catch (_) { openScanModal(); } return; }
 
     const navEl = t.closest("[data-nav]");
     if (navEl) { e.preventDefault(); navigateTo(navEl.dataset.nav); return; }
@@ -1234,6 +1335,12 @@ document.addEventListener("DOMContentLoaded", () => {
     if (t.closest("#btn-refresh-scans")) { refreshScans(); return; }
     if (t.closest("#btn-clear-log")) { const term = $("#console-terminal"); if (term) term.innerHTML = ""; if (state.consoleScanId) state.logs[state.consoleScanId] = []; return; }
     if (t.closest("#btn-console-cancel")) { if (state.consoleScanId) cancelScan(state.consoleScanId); return; }
+    if (t.closest("#btn-new-chat")) { createNewChat(); return; }
+    if (t.closest("#btn-chat-send")) { sendChatMessage(); return; }
+    const convoItem = t.closest(".chat-convo-item");
+    if (convoItem) { loadChatMessages(convoItem.dataset.id); return; }
+    const convoDelete = t.closest(".chat-convo-delete");
+    if (convoDelete) { e.stopPropagation(); deleteChatConvo(convoDelete.dataset.id); return; }
   });
 
   // Modal / panel backdrop
@@ -1262,6 +1369,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const t = e.target;
     if (t.id === "search-audits") { state.scanFilters.q = t.value; renderScans(); }
     if (t.id === "search-findings") { state.findingFilters.q = t.value; renderFindings(); }
+    if (t.id === "chat-textarea") {
+      t.style.height = "auto";
+      t.style.height = Math.min(t.scrollHeight, 120) + "px";
+      const btn = $("#btn-chat-send");
+      if (btn) btn.disabled = !t.value.trim() || state.chatStreaming;
+    }
   });
 
   // Scan sort toggle + overview search
@@ -1278,6 +1391,10 @@ document.addEventListener("DOMContentLoaded", () => {
       if (q) { state.findingFilters.q = q; navigateTo("findings"); const sf = $("#search-findings"); if (sf) sf.value = q; }
     }
     if (e.key === "Escape") { closeModal(); closePanel(); }
+    if (e.key === "Enter" && !e.shiftKey && e.target.id === "chat-textarea") {
+      e.preventDefault();
+      sendChatMessage();
+    }
   });
 
   /* ── Decorative severity mini-charts ──────────────────── */
@@ -1291,6 +1408,238 @@ document.addEventListener("DOMContentLoaded", () => {
       bar.style.background = color;
       c.appendChild(bar);
     });
+  }
+
+  /* ══════════════════════════════════════════════════════
+     AI CHAT
+     ══════════════════════════════════════════════════════ */
+  async function renderChat() {
+    await loadConversations();
+    renderConvoList();
+    const empty = $("#chat-empty");
+    const bar = $("#chat-input-bar");
+    if (state.chatConvoId) {
+      if (empty) empty.hidden = true;
+      if (bar) bar.hidden = false;
+      await loadChatMessages(state.chatConvoId);
+    } else {
+      if (empty) empty.hidden = false;
+      if (bar) bar.hidden = true;
+      const msgs = $("#chat-messages");
+      if (msgs) msgs.innerHTML = '<div class="chat-empty" id="chat-empty"><p>Select a conversation or start a new one.</p><p class="dim">AI Chat lets you interact with w1r3hound tools through natural language.</p></div>';
+    }
+  }
+
+  async function loadConversations() {
+    try { state.chatConvos = await API.chatConversations(); } catch (_) { state.chatConvos = []; }
+  }
+
+  function renderConvoList() {
+    const el = $("#chat-convo-list");
+    if (!el) return;
+    if (!state.chatConvos.length) {
+      el.innerHTML = '<div class="dim" style="padding:1rem;text-align:center">No conversations yet</div>';
+      return;
+    }
+    el.innerHTML = state.chatConvos.map(c => `
+      <div class="chat-convo-item${c.id === state.chatConvoId ? " active" : ""}" data-id="${Utils.escapeHTML(c.id)}">
+        <div class="chat-convo-title">${Utils.escapeHTML(truncate(c.title, 40))}</div>
+        <div class="chat-convo-meta">${c.message_count} msg · ${Utils.timeAgo(c.updated_at)}</div>
+        <button class="chat-convo-delete" data-id="${Utils.escapeHTML(c.id)}" title="Delete">×</button>
+      </div>
+    `).join("");
+  }
+
+  async function loadChatMessages(id) {
+    state.chatConvoId = id;
+    renderConvoList();
+    const bar = $("#chat-input-bar");
+    const empty = $("#chat-empty");
+    if (bar) bar.hidden = false;
+    if (empty) empty.hidden = true;
+    try {
+      const convo = await API.chatGet(id);
+      state.chatMessages = convo.messages || [];
+      renderChatMessages();
+    } catch (err) {
+      toast("Failed to load conversation: " + err.message, "error");
+    }
+  }
+
+  function renderChatMessages() {
+    const el = $("#chat-messages");
+    if (!el) return;
+    if (!state.chatMessages.length) {
+      el.innerHTML = '<div class="chat-empty-conv dim" style="padding:2rem;text-align:center">Send a message to start chatting.</div>';
+      return;
+    }
+    el.innerHTML = state.chatMessages.filter(m => m.role === "user" || m.role === "assistant").map(m => `
+      <div class="chat-bubble chat-${m.role}">
+        <div class="chat-bubble-role">${m.role === "user" ? "You" : "w1r3hound"}</div>
+        <div class="chat-bubble-text">${formatChatText(m.content)}</div>
+      </div>
+    `).join("");
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function formatChatText(text) {
+    let s = Utils.escapeHTML(text);
+    s = s.replace(/```([\s\S]*?)```/g, '<pre class="chat-code">$1</pre>');
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/\n/g, '<br>');
+    return s;
+  }
+
+  function truncate(s, max) {
+    if (!s) return "";
+    return s.length > max ? s.slice(0, max) + "…" : s;
+  }
+
+  async function createNewChat() {
+    try {
+      const convo = await API.chatCreate("");
+      state.chatConvoId = convo.id;
+      state.chatMessages = [];
+      await loadConversations();
+      renderConvoList();
+      renderChatMessages();
+      const bar = $("#chat-input-bar");
+      const empty = $("#chat-empty");
+      if (bar) bar.hidden = false;
+      if (empty) empty.hidden = true;
+      const ta = $("#chat-textarea");
+      if (ta) ta.focus();
+    } catch (err) { toast("Failed to create conversation: " + err.message, "error"); }
+  }
+
+  async function deleteChatConvo(id) {
+    if (!confirm("Delete this conversation?")) return;
+    try {
+      await API.chatDelete(id);
+      if (state.chatConvoId === id) {
+        state.chatConvoId = null;
+        state.chatMessages = [];
+      }
+      await renderChat();
+    } catch (err) { toast("Delete failed: " + err.message, "error"); }
+  }
+
+  async function sendChatMessage() {
+    const ta = $("#chat-textarea");
+    if (!ta) return;
+    const msg = ta.value.trim();
+    if (!msg || state.chatStreaming) return;
+    if (!state.chatConvoId) return;
+
+    state.chatStreaming = true;
+    ta.value = "";
+    ta.style.height = "auto";
+    const btn = $("#btn-chat-send");
+    if (btn) btn.disabled = true;
+
+    state.chatMessages.push({ role: "user", content: msg, timestamp: new Date().toISOString() });
+    renderChatMessages();
+
+    // Start SSE stream
+    const url = API.chatMessageUrl(state.chatConvoId);
+    try {
+      const headers = Object.assign({ "Content-Type": "application/json" }, API.authHeaders());
+      const csrf = API.getCsrf();
+      if (csrf) headers["X-CSRF-Token"] = csrf;
+      const resp = await fetch(url, {
+        method: "POST",
+        headers,
+        credentials: "same-origin",
+        body: JSON.stringify({ message: msg }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+        throw new Error(err.error || `HTTP ${resp.status}`);
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let assistantText = "";
+      let bubbleAdded = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const ev = JSON.parse(line.slice(6));
+            switch (ev.type) {
+              case "text":
+                assistantText += ev.data;
+                if (!bubbleAdded) {
+                  state.chatMessages.push({ role: "assistant", content: "", timestamp: new Date().toISOString() });
+                  bubbleAdded = true;
+                }
+                updateStreamingBubble(assistantText);
+                break;
+              case "tool_start":
+                appendToolCard(ev.tool, ev.id, "running");
+                break;
+              case "tool_result":
+                updateToolCard(ev.id, ev.data);
+                break;
+              case "error":
+                toast("Chat error: " + ev.data, "error");
+                break;
+              case "done":
+                if (bubbleAdded) {
+                  state.chatMessages[state.chatMessages.length - 1].content = assistantText;
+                }
+                break;
+            }
+          } catch (_) { /* skip malformed SSE lines */ }
+        }
+      }
+    } catch (err) {
+      toast("Chat failed: " + err.message, "error");
+    } finally {
+      state.chatStreaming = false;
+      if (btn) btn.disabled = !ta.value.trim();
+    }
+  }
+
+  function updateStreamingBubble(text) {
+    const el = $("#chat-messages");
+    if (!el) return;
+    let last = el.querySelector(".chat-bubble.chat-assistant:last-child");
+    if (!last) {
+      last = document.createElement("div");
+      last.className = "chat-bubble chat-assistant";
+      last.innerHTML = '<div class="chat-bubble-role">w1r3hound</div><div class="chat-bubble-text"></div>';
+      el.appendChild(last);
+    }
+    const textEl = last.querySelector(".chat-bubble-text");
+    if (textEl) textEl.innerHTML = formatChatText(text);
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function appendToolCard(tool, id, status) {
+    const el = $("#chat-messages");
+    if (!el) return;
+    const card = document.createElement("div");
+    card.className = "chat-tool";
+    card.dataset.toolId = id;
+    card.innerHTML = `<div class="chat-tool-label">⚙ ${Utils.escapeHTML(tool)} <span class="dim">${Utils.escapeHTML(status)}</span></div><div class="chat-tool-content"></div>`;
+    el.appendChild(card);
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function updateToolCard(id, result) {
+    const card = document.querySelector(`.chat-tool[data-tool-id="${CSS.escape(id)}"]`);
+    if (!card) return;
+    const label = card.querySelector(".chat-tool-label span");
+    if (label) label.textContent = "done";
+    const content = card.querySelector(".chat-tool-content");
+    if (content) content.textContent = truncate(result, 500);
   }
 
   /* ══════════════════════════════════════════════════════

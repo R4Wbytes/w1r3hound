@@ -4,6 +4,9 @@
 # Login panel store — contains password hashes; never commit it
 /auth/
 
+# AI Chat conversations — runtime data, config may contain API keys
+/chats/
+
 # Informes y logs generados por los escaneos lanzados desde la GUI
 /results/
 

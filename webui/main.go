@@ -30,9 +30,11 @@ const listenAddr = "127.0.0.1:8737"
 var sseHeartbeatInterval = 15 * time.Second
 
 type server struct {
-	mgr   *Manager
-	auth  *AuthManager
-	token string // optional; legacy shared token (open mode only)
+	mgr    *Manager
+	auth   *AuthManager
+	bridge *MCPBridge
+	chat   *ChatManager
+	token  string // optional; legacy shared token (open mode only)
 	// loginLimiter bounds pre-auth PBKDF2 work (W-01). Nil in tests/open-mode,
 	// where the limiter's methods are no-ops (fail open).
 	loginLimiter *loginLimiter
@@ -50,10 +52,16 @@ func main() {
 	if fi, err := os.Stat(binPath); err != nil || fi.IsDir() {
 		log.Fatalf("w1r3hound binary not found at %s (build with: go build -o w1r3hound .)", binPath)
 	}
+	bridge, err := NewMCPBridge(mcpVersion())
+	if err != nil {
+		log.Fatalf("could not initialize the MCP bridge: %v", err)
+	}
+
 	webuiDir := filepath.Join(repoRoot, "webui")
 	mgr, err := NewManager(repoRoot, binPath,
 		filepath.Join(webuiDir, "results"),
-		filepath.Join(webuiDir, "wordlists"))
+		filepath.Join(webuiDir, "wordlists"),
+		bridge)
 	if err != nil {
 		log.Fatalf("could not initialize the manager: %v", err)
 	}
@@ -64,9 +72,16 @@ func main() {
 	}
 	bootstrapAdminFromEnv(auth)
 
+	chat, err := NewChatManager(filepath.Join(webuiDir, "chats"), bridge)
+	if err != nil {
+		log.Fatalf("could not initialize the chat manager: %v", err)
+	}
+
 	s := &server{
 		mgr:          mgr,
 		auth:         auth,
+		bridge:       bridge,
+		chat:         chat,
 		token:        os.Getenv("W1R3HOUND_UI_TOKEN"),
 		loginLimiter: newLoginLimiter(loginMaxConcurrent, loginBurst, loginRefillPerSec),
 	}
@@ -132,6 +147,7 @@ func (s *server) handler() (http.Handler, error) {
 	}
 	mux.Handle("GET /", http.FileServer(http.FS(static)))
 	mux.HandleFunc("GET /api/modules", s.handleModules)
+	mux.HandleFunc("GET /api/workflows", s.handleWorkflows)
 	mux.HandleFunc("POST /api/scan", s.handleStartScan)
 	mux.HandleFunc("GET /api/scans", s.handleListScans)
 	mux.HandleFunc("GET /api/scans/{id}", s.handleGetScan)
@@ -153,6 +169,15 @@ func (s *server) handler() (http.Handler, error) {
 	mux.HandleFunc("DELETE /api/auth/users/{username}", s.handleDeleteUser)
 	mux.HandleFunc("POST /api/auth/users/{username}/reset", s.handleResetPassword)
 	mux.HandleFunc("POST /api/auth/users/{username}/unlock", s.handleUnlockUser)
+
+	// AI Chat.
+	mux.HandleFunc("GET /api/chat/config", s.handleChatConfig)
+	mux.HandleFunc("POST /api/chat/config", s.handleSetChatConfig)
+	mux.HandleFunc("GET /api/chat/conversations", s.handleChatConversations)
+	mux.HandleFunc("POST /api/chat/conversations", s.handleChatCreate)
+	mux.HandleFunc("GET /api/chat/conversations/{id}", s.handleChatGet)
+	mux.HandleFunc("DELETE /api/chat/conversations/{id}", s.handleChatDelete)
+	mux.HandleFunc("POST /api/chat/conversations/{id}/message", s.handleChatMessage)
 
 	return securityHeaders(originGuard(s.authGate(mux))), nil
 }
@@ -311,16 +336,28 @@ func (s *server) handleStartScan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	args, base, err := buildArgs(&req, s.mgr.wordlistsDir, s.mgr.resultsDir)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
 	owner := ""
 	if sess := sessionFrom(r); sess != nil {
 		owner = sess.Username
 	}
-	job, err := s.mgr.Submit(owner, req.Target, args, base)
+
+	var job *Job
+	var err error
+	if req.Source == "mcp" {
+		params, base, perr := buildMCPParams(&req, s.mgr.wordlistsDir, s.mgr.resultsDir)
+		if perr != nil {
+			writeError(w, http.StatusBadRequest, perr.Error())
+			return
+		}
+		job, err = s.mgr.SubmitMCP(owner, req.Target, params, base)
+	} else {
+		args, base, berr := buildArgs(&req, s.mgr.wordlistsDir, s.mgr.resultsDir)
+		if berr != nil {
+			writeError(w, http.StatusBadRequest, berr.Error())
+			return
+		}
+		job, err = s.mgr.Submit(owner, req.Target, args, base)
+	}
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "queue full") {
 			writeError(w, http.StatusConflict, err.Error())
@@ -519,4 +556,223 @@ func (s *server) confinedResultFile(id, ext string) (string, error) {
 		return "", fmt.Errorf("not found")
 	}
 	return resolved, nil
+}
+
+func (s *server) handleWorkflows(w http.ResponseWriter, r *http.Request) {
+	if s.bridge == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"workflows": []Workflow{}})
+		return
+	}
+	raw, err := s.bridge.Prompts()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list workflows")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workflows": enrichWorkflows(raw)})
+}
+
+// --- AI Chat handlers ---
+
+func (s *server) chatOwner(r *http.Request) string {
+	if s.auth != nil && s.auth.enabled() {
+		if sess := sessionFrom(r); sess != nil {
+			return sess.Username
+		}
+	}
+	return "default"
+}
+
+func (s *server) handleChatConfig(w http.ResponseWriter, r *http.Request) {
+	if s.chat == nil {
+		writeError(w, http.StatusServiceUnavailable, "chat not available")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.chat.ConfigStatus())
+}
+
+func (s *server) handleSetChatConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+	if s.auth.enabled() {
+		if sess := sessionFrom(r); sess == nil || sess.Role != RoleAdmin {
+			writeError(w, http.StatusForbidden, "admin only")
+			return
+		}
+	}
+	if s.chat == nil {
+		writeError(w, http.StatusServiceUnavailable, "chat not available")
+		return
+	}
+	var body struct {
+		APIKey    string `json:"api_key"`
+		Model     string `json:"model"`
+		MaxTokens int    `json:"max_tokens"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4*1024)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if err := s.chat.SetConfig(body.APIKey, body.Model, body.MaxTokens); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.chat.ConfigStatus())
+}
+
+func (s *server) handleChatConversations(w http.ResponseWriter, r *http.Request) {
+	if s.chat == nil {
+		writeError(w, http.StatusServiceUnavailable, "chat not available")
+		return
+	}
+	owner := s.chatOwner(r)
+	isAdmin := false
+	if s.auth != nil && s.auth.enabled() {
+		if sess := sessionFrom(r); sess != nil {
+			isAdmin = sess.Role == RoleAdmin
+		}
+	}
+	list := s.chat.ListConversations(owner, isAdmin)
+	if list == nil {
+		list = []ConvoSummary{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conversations": list})
+}
+
+func (s *server) handleChatCreate(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+	if s.chat == nil {
+		writeError(w, http.StatusServiceUnavailable, "chat not available")
+		return
+	}
+	var body struct {
+		Title string `json:"title"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 4*1024)).Decode(&body)
+	owner := s.chatOwner(r)
+	convo, err := s.chat.CreateConversation(owner, body.Title)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, convo)
+}
+
+func (s *server) handleChatGet(w http.ResponseWriter, r *http.Request) {
+	if s.chat == nil {
+		writeError(w, http.StatusServiceUnavailable, "chat not available")
+		return
+	}
+	id := r.PathValue("id")
+	convo, err := s.chat.loadConversation(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "conversation not found")
+		return
+	}
+	owner := s.chatOwner(r)
+	isAdmin := false
+	if s.auth != nil && s.auth.enabled() {
+		if sess := sessionFrom(r); sess != nil {
+			isAdmin = sess.Role == RoleAdmin
+		}
+	}
+	if convo.Owner != owner && !isAdmin {
+		writeError(w, http.StatusNotFound, "conversation not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, convo)
+}
+
+func (s *server) handleChatDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+	if s.chat == nil {
+		writeError(w, http.StatusServiceUnavailable, "chat not available")
+		return
+	}
+	id := r.PathValue("id")
+	convo, err := s.chat.loadConversation(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "conversation not found")
+		return
+	}
+	owner := s.chatOwner(r)
+	isAdmin := false
+	if s.auth != nil && s.auth.enabled() {
+		if sess := sessionFrom(r); sess != nil {
+			isAdmin = sess.Role == RoleAdmin
+		}
+	}
+	if convo.Owner != owner && !isAdmin {
+		writeError(w, http.StatusNotFound, "conversation not found")
+		return
+	}
+	if err := s.chat.DeleteConversation(id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *server) handleChatMessage(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+	if s.chat == nil {
+		writeError(w, http.StatusServiceUnavailable, "chat not available")
+		return
+	}
+	if !s.chat.Configured() {
+		writeError(w, http.StatusPreconditionFailed, "API key not configured")
+		return
+	}
+	id := r.PathValue("id")
+	convo, err := s.chat.loadConversation(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "conversation not found")
+		return
+	}
+	owner := s.chatOwner(r)
+	isAdmin := false
+	if s.auth != nil && s.auth.enabled() {
+		if sess := sessionFrom(r); sess != nil {
+			isAdmin = sess.Role == RoleAdmin
+		}
+	}
+	if convo.Owner != owner && !isAdmin {
+		writeError(w, http.StatusNotFound, "conversation not found")
+		return
+	}
+
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&body); err != nil || strings.TrimSpace(body.Message) == "" {
+		writeError(w, http.StatusBadRequest, "message is required")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	ctx := r.Context()
+	sendErr := s.chat.Send(ctx, id, strings.TrimSpace(body.Message), func(ev chatEvent) {
+		data, _ := json.Marshal(ev)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	})
+	if sendErr != nil {
+		errEv, _ := json.Marshal(chatEvent{Type: "error", Data: sendErr.Error()})
+		fmt.Fprintf(w, "data: %s\n\n", errEv)
+		flusher.Flush()
+	}
 }

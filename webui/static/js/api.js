@@ -118,6 +118,18 @@ const API = (() => {
     reportUrl(id, ext) { return `/api/scans/${encodeURIComponent(id)}/report.${ext}`; },
     logUrl(id) { return `/api/scans/${encodeURIComponent(id)}/log`; },
     eventsUrl(id) { return `/api/scans/${encodeURIComponent(id)}/events`; },
+
+    /* ── Workflows ── */
+    async workflows() { const d = await json("/api/workflows"); return (d && d.workflows) || []; },
+
+    /* ── AI Chat ── */
+    async chatConfig() { return json("/api/chat/config"); },
+    async setChatConfig(body) { return postJSON("/api/chat/config", body); },
+    async chatConversations() { const d = await json("/api/chat/conversations"); return (d && d.conversations) || []; },
+    async chatCreate(title) { return postJSON("/api/chat/conversations", { title }); },
+    async chatGet(id) { return json(`/api/chat/conversations/${encodeURIComponent(id)}`); },
+    async chatDelete(id) { return json(`/api/chat/conversations/${encodeURIComponent(id)}`, { method: "DELETE" }); },
+    chatMessageUrl(id) { return `/api/chat/conversations/${encodeURIComponent(id)}/message`; },
   };
 })();
 

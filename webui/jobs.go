@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/R4Wbytes/w1r3hound/internal/report"
 )
 
 // JobStatus is the lifecycle state of a queued scan.
@@ -43,6 +45,7 @@ type Job struct {
 	Target    string    `json:"target"`
 	Owner     string    `json:"owner,omitempty"` // submitting username; empty in open mode
 	Args      []string  `json:"args"`
+	Source    string    `json:"source"` // "cli" or "mcp"
 	Status    JobStatus `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
 	StartedAt time.Time `json:"started_at,omitempty"`
@@ -51,16 +54,17 @@ type Job struct {
 	ErrMsg    string    `json:"error,omitempty"`
 	BasePath  string    `json:"-"` // absolute output base, no extension
 
-	mu      sync.Mutex
-	logBuf  []string
-	subs    map[chan string]struct{}
-	closed  bool
-	cancel  context.CancelFunc
-	logFile *os.File
-	counts  map[string]int
-	total   int
-	hasJSON bool
-	hasMD   bool
+	mu        sync.Mutex
+	logBuf    []string
+	subs      map[chan string]struct{}
+	closed    bool
+	cancel    context.CancelFunc
+	logFile   *os.File
+	counts    map[string]int
+	total     int
+	hasJSON   bool
+	hasMD     bool
+	mcpParams *MCPScanParams // non-nil for MCP-sourced scans
 }
 
 // appendLog records one output line, mirrors it to the on-disk .log file and
@@ -150,6 +154,7 @@ type ScanSummary struct {
 	ID        string         `json:"id"`
 	Target    string         `json:"target"`
 	Owner     string         `json:"-"` // server-side only: used for per-user access control
+	Source    string         `json:"source,omitempty"` // "cli" or "mcp"
 	Status    JobStatus      `json:"status"`
 	CreatedAt string         `json:"created_at,omitempty"`
 	StartedAt string         `json:"started_at,omitempty"`
@@ -169,6 +174,7 @@ func (j *Job) summary() ScanSummary {
 		ID:        j.ID,
 		Target:    j.Target,
 		Owner:     j.Owner,
+		Source:    j.Source,
 		Status:    j.Status,
 		ExitCode:  j.ExitCode,
 		ErrMsg:    j.ErrMsg,
@@ -203,13 +209,14 @@ type Manager struct {
 	binPath      string
 	resultsDir   string
 	wordlistsDir string
+	bridge       *MCPBridge
 
 	mu    sync.RWMutex
 	jobs  map[string]*Job
 	queue chan *Job
 }
 
-func NewManager(repoRoot, binPath, resultsDir, wordlistsDir string) (*Manager, error) {
+func NewManager(repoRoot, binPath, resultsDir, wordlistsDir string, bridge *MCPBridge) (*Manager, error) {
 	for _, dir := range []string{resultsDir, wordlistsDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
@@ -225,6 +232,7 @@ func NewManager(repoRoot, binPath, resultsDir, wordlistsDir string) (*Manager, e
 		binPath:      binPath,
 		resultsDir:   resultsDir,
 		wordlistsDir: wordlistsDir,
+		bridge:       bridge,
 		jobs:         make(map[string]*Job),
 		queue:        make(chan *Job, queueCapacity),
 	}
@@ -269,6 +277,7 @@ func (m *Manager) Submit(owner, target string, args []string, base string) (*Job
 		Target:    target,
 		Owner:     owner,
 		Args:      args,
+		Source:    "cli",
 		Status:    StatusQueued,
 		CreatedAt: time.Now(),
 		BasePath:  filepath.Join(m.resultsDir, base),
@@ -390,7 +399,11 @@ func (m *Manager) worker() {
 					job.finish(StatusFailed, -1, fmt.Sprintf("internal panic: %v", r))
 				}
 			}()
-			m.run(job)
+			if job.Source == "mcp" {
+				m.runMCP(job)
+			} else {
+				m.run(job)
+			}
 		}()
 	}
 }
@@ -476,6 +489,126 @@ func (m *Manager) run(job *Job) {
 		}
 		job.finish(StatusFailed, code, waitErr.Error())
 	}
+}
+
+// SubmitMCP registers and queues an MCP-backed scan job.
+func (m *Manager) SubmitMCP(owner, target string, params MCPScanParams, base string) (*Job, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.jobs[base]; exists {
+		return nil, fmt.Errorf("a scan with the name %q already exists", base)
+	}
+	if _, err := os.Stat(filepath.Join(m.resultsDir, base+".json")); err == nil {
+		return nil, errOutputExists(base)
+	}
+	if len(m.queue) >= queueCapacity {
+		return nil, fmt.Errorf("queue full, try again when a scan finishes")
+	}
+	logFile, err := os.OpenFile(filepath.Join(m.resultsDir, base+".log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("could not create the log file: %w", err)
+	}
+	if werr := writeScanMeta(m.resultsDir, base, scanMeta{
+		Owner:     owner,
+		Target:    target,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}); werr != nil {
+		log.Printf("could not persist ownership metadata for scan %q: %v", base, werr)
+	}
+	job := &Job{
+		ID:        base,
+		Target:    target,
+		Owner:     owner,
+		Source:    "mcp",
+		Status:    StatusQueued,
+		CreatedAt: time.Now(),
+		BasePath:  filepath.Join(m.resultsDir, base),
+		subs:      make(map[chan string]struct{}),
+		logFile:   logFile,
+		mcpParams: &params,
+	}
+	m.jobs[base] = job
+	m.queue <- job
+	return job, nil
+}
+
+// runMCP executes a scan via the in-process MCP bridge, streaming
+// progress notifications to the job log and writing the report to disk.
+func (m *Manager) runMCP(job *Job) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	job.mu.Lock()
+	if job.Status == StatusCancelled {
+		job.mu.Unlock()
+		job.finish(StatusCancelled, -1, "cancelled before starting")
+		return
+	}
+	job.cancel = cancel
+	job.Status = StatusRunning
+	job.StartedAt = time.Now()
+	job.mu.Unlock()
+
+	job.appendLog("[webui] MCP scan started for " + job.Target)
+
+	if m.bridge == nil {
+		job.appendLog("[webui] MCP bridge not available")
+		job.finish(StatusFailed, -1, "MCP bridge not initialized")
+		return
+	}
+
+	result, err := m.bridge.Scan(ctx, *job.mcpParams, func(n mcpNotification) {
+		switch n.Method {
+		case "notifications/progress":
+			var p struct {
+				Message string `json:"message"`
+			}
+			_ = json.Unmarshal(n.Params, &p)
+			if p.Message != "" {
+				job.appendLog("[mcp] " + p.Message)
+			}
+		case "notifications/message":
+			var p struct {
+				Data string `json:"data"`
+			}
+			_ = json.Unmarshal(n.Params, &p)
+			if p.Data != "" {
+				job.appendLog(p.Data)
+			}
+		}
+	})
+
+	if err != nil {
+		job.appendLog("[webui] MCP scan failed: " + err.Error())
+		if ctx.Err() == context.Canceled {
+			job.finish(StatusCancelled, -1, "cancelled by the user")
+		} else {
+			job.finish(StatusFailed, -1, err.Error())
+		}
+		return
+	}
+
+	if err := writeReportToDisk(m.resultsDir, job.ID, result); err != nil {
+		job.appendLog("[webui] failed to write report: " + err.Error())
+	}
+
+	job.appendLog("[webui] MCP scan complete")
+	job.finish(StatusDone, 0, "")
+}
+
+// writeReportToDisk persists an MCP scan result as .json and .md files
+// in the results directory, making it discoverable by the dashboard.
+func writeReportToDisk(resultsDir, base string, result *MCPScanResult) error {
+	jsonPath := filepath.Join(resultsDir, base+".json")
+	if err := result.Report.SaveJSON(jsonPath); err != nil {
+		return fmt.Errorf("write JSON: %w", err)
+	}
+	mdPath := filepath.Join(resultsDir, base+".md")
+	md := report.GenerateMarkdown(result.Report)
+	if err := os.WriteFile(mdPath, []byte(md), 0o600); err != nil {
+		return fmt.Errorf("write Markdown: %w", err)
+	}
+	return nil
 }
 
 func exitCodeOf(err error) int {
