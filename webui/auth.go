@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -356,7 +357,9 @@ func (a *AuthManager) authenticate(username, password string) (User, error) {
 			u.LockedUntil = now.Add(lockoutDuration)
 		}
 		u.UpdatedAt = now
-		_ = a.saveLocked()
+		if err := a.saveLocked(); err != nil {
+			log.Printf("SECURITY: could not persist failed-login counter for %q: %v", username, err)
+		}
 		if u.lockedNow() {
 			return User{}, errAccountLocked
 		}
@@ -366,7 +369,9 @@ func (a *AuthManager) authenticate(username, password string) (User, error) {
 	u.LockedUntil = time.Time{}
 	u.LastLoginAt = now
 	u.UpdatedAt = now
-	_ = a.saveLocked()
+	if err := a.saveLocked(); err != nil {
+		log.Printf("WARNING: could not persist login state for %q: %v", username, err)
+	}
 	return *u, nil
 }
 

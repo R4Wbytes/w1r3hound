@@ -10,10 +10,13 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/R4Wbytes/w1r3hound/internal/core"
 	"github.com/R4Wbytes/w1r3hound/internal/mcp"
 )
+
+var errBridgeLost = fmt.Errorf("MCP bridge connection lost")
 
 type mcpResponse struct {
 	ID     json.RawMessage `json:"id"`
@@ -63,10 +66,12 @@ type MCPScanParams struct {
 // MCPBridge holds a persistent in-process connection to the MCP server via
 // io.Pipe. One bridge per webui process; it multiplexes requests by ID.
 type MCPBridge struct {
-	toMCP   io.WriteCloser
-	fromMCP *bufio.Scanner
+	toMCP      io.WriteCloser
+	fromMCP    *bufio.Scanner
+	fromMCPPipe io.Closer // read end of the response pipe
 
 	reqID atomic.Int64
+	done  chan struct{} // closed when readLoop exits
 
 	pendMu  sync.Mutex
 	pending map[string]chan mcpResponse
@@ -80,10 +85,12 @@ func NewMCPBridge(version string) (*MCPBridge, error) {
 	rr, rw := io.Pipe()
 
 	b := &MCPBridge{
-		toMCP:     pw,
-		fromMCP:   bufio.NewScanner(rr),
-		pending:   make(map[string]chan mcpResponse),
-		notifyFns: make(map[string]func(mcpNotification)),
+		toMCP:      pw,
+		fromMCP:    bufio.NewScanner(rr),
+		fromMCPPipe: rr,
+		done:       make(chan struct{}),
+		pending:    make(map[string]chan mcpResponse),
+		notifyFns:  make(map[string]func(mcpNotification)),
 	}
 	b.fromMCP.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
 
@@ -98,6 +105,8 @@ func NewMCPBridge(version string) (*MCPBridge, error) {
 }
 
 func (b *MCPBridge) readLoop() {
+	defer b.drainPending()
+	defer close(b.done)
 	for b.fromMCP.Scan() {
 		line := b.fromMCP.Bytes()
 		if len(line) == 0 {
@@ -153,6 +162,22 @@ func (b *MCPBridge) readLoop() {
 	}
 }
 
+// drainPending sends a synthetic error to every caller still waiting for a
+// response, preventing goroutine leaks when the read loop exits.
+func (b *MCPBridge) drainPending() {
+	b.pendMu.Lock()
+	defer b.pendMu.Unlock()
+	for id, ch := range b.pending {
+		ch <- mcpResponse{
+			Error: &struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			}{Code: -32000, Message: "MCP bridge connection lost"},
+		}
+		delete(b.pending, id)
+	}
+}
+
 func (b *MCPBridge) send(id string, method string, params any) (mcpResponse, error) {
 	ch := make(chan mcpResponse, 1)
 
@@ -184,8 +209,17 @@ func (b *MCPBridge) send(id string, method string, params any) (mcpResponse, err
 		return mcpResponse{}, err
 	}
 
-	resp := <-ch
-	return resp, nil
+	select {
+	case resp := <-ch:
+		return resp, nil
+	case <-b.done:
+		select {
+		case resp := <-ch:
+			return resp, nil
+		default:
+		}
+		return mcpResponse{}, errBridgeLost
+	}
 }
 
 func (b *MCPBridge) nextID() string {
@@ -283,9 +317,16 @@ func (b *MCPBridge) Scan(ctx context.Context, params MCPScanParams, onNotify fun
 		cdata = append(cdata, '\n')
 		_, _ = b.toMCP.Write(cdata)
 
-		// Still wait for the response (MCP will send one after cancellation).
-		resp := <-ch
-		_ = resp
+		// Wait for the response with a bounded timeout so we don't hang
+		// if the MCP server crashed before acknowledging the cancellation.
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			b.pendMu.Lock()
+			delete(b.pending, id)
+			b.pendMu.Unlock()
+		case <-b.done:
+		}
 		return nil, ctx.Err()
 
 	case resp := <-ch:
@@ -394,10 +435,12 @@ func (b *MCPBridge) GetPrompt(name string, args map[string]string) (json.RawMess
 	return result.Messages, nil
 }
 
-// Close shuts down the bridge by closing the writer pipe, which causes
-// the MCP server's run() loop to exit on EOF.
+// Close shuts down the bridge by closing both pipes. The write close causes
+// the MCP server's run() loop to exit on EOF; the read close unblocks
+// readLoop if the server hasn't closed its writer yet.
 func (b *MCPBridge) Close() {
 	_ = b.toMCP.Close()
+	_ = b.fromMCPPipe.Close()
 }
 
 // version is the webui build version, injected at build time or read from env.

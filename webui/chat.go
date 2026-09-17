@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -518,7 +519,8 @@ func (cm *ChatManager) callLLM(ctx context.Context, apiKey, endpoint, model, sys
 
 	if resp.StatusCode != 200 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return nil, fmt.Errorf("LLM API error %d: %s", resp.StatusCode, string(errBody))
+		log.Printf("LLM API error %d: %s", resp.StatusCode, string(errBody))
+		return nil, fmt.Errorf("LLM API returned status %d", resp.StatusCode)
 	}
 
 	result := &llmResponse{}
@@ -585,7 +587,11 @@ func (cm *ChatManager) callLLM(ctx context.Context, apiKey, endpoint, model, sys
 			if currentBlock.Type == "tool_use" {
 				var input map[string]any
 				if inputJSON.Len() > 0 {
-					_ = json.Unmarshal([]byte(inputJSON.String()), &input)
+					if err := json.Unmarshal([]byte(inputJSON.String()), &input); err != nil {
+						log.Printf("chat: dropping tool_use %q with malformed input: %v", currentBlock.Name, err)
+						currentBlock = nil
+						continue
+					}
 				}
 				currentBlock.Input = input
 			}

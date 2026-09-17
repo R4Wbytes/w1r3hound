@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -153,5 +158,102 @@ func TestValidConvoID(t *testing.T) {
 		if got := validConvoID(tt.id); got != tt.want {
 			t.Errorf("validConvoID(%q) = %v, want %v", tt.id, got, tt.want)
 		}
+	}
+}
+
+// HC-5: Malformed tool_use input must be dropped, not invoked with nil.
+func TestCallLLMMalformedToolInput(t *testing.T) {
+	// Mock SSE stream: a tool_use block whose input_json_delta is invalid JSON.
+	ssePayload := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"test","stop_reason":null}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"scan"}}`,
+		"",
+		"event: content_block_delta",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"target\": \"ex"}}`,
+		"",
+		// No closing brace — truncated JSON.
+		"event: content_block_stop",
+		`data: {"type":"content_block_stop","index":0}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
+		"",
+		"event: content_block_delta",
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Done"}}`,
+		"",
+		"event: content_block_stop",
+		`data: {"type":"content_block_stop","index":1}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, ssePayload)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cm, err := NewChatManager(dir, nil)
+	if err != nil {
+		t.Fatalf("NewChatManager: %v", err)
+	}
+
+	msgs := []map[string]any{
+		{"role": "user", "content": "test"},
+	}
+	resp, err := cm.callLLM(context.Background(), "test-key", srv.URL, "test-model", "system", msgs, nil, 1024, func(chatEvent) {})
+	if err != nil {
+		t.Fatalf("callLLM: %v", err)
+	}
+
+	// The malformed tool_use block should be dropped; only the text block remains.
+	for _, block := range resp.Content {
+		if block.Type == "tool_use" {
+			t.Fatalf("malformed tool_use block was NOT dropped — got block with name %q, input=%v", block.Name, block.Input)
+		}
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Type != "text" {
+		t.Fatalf("expected 1 text block, got %d blocks: %+v", len(resp.Content), resp.Content)
+	}
+}
+
+// HC-6: LLM API errors must not leak the raw error body to callers.
+func TestCallLLMErrorSanitized(t *testing.T) {
+	sensitiveBody := `{"error":{"type":"authentication_error","message":"Invalid API key sk-ant-REDACTED for account acct_01XXXX"}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(401)
+		fmt.Fprint(w, sensitiveBody)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cm, err := NewChatManager(dir, nil)
+	if err != nil {
+		t.Fatalf("NewChatManager: %v", err)
+	}
+
+	msgs := []map[string]any{
+		{"role": "user", "content": "test"},
+	}
+	_, err = cm.callLLM(context.Background(), "test-key", srv.URL, "test-model", "system", msgs, nil, 1024, func(chatEvent) {})
+	if err == nil {
+		t.Fatal("expected error for 401, got nil")
+	}
+
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "sk-ant") || strings.Contains(errMsg, "acct_01") || strings.Contains(errMsg, "REDACTED") {
+		t.Fatalf("error leaks sensitive data to caller: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "401") {
+		t.Fatalf("error should mention status code 401, got: %s", errMsg)
 	}
 }

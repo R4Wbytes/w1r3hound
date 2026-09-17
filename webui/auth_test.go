@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -362,5 +363,40 @@ func TestLegacyTokenStillWorksWhenAuthDisabled(t *testing.T) {
 	req.Header.Set("X-Auth-Token", "s3cr3t")
 	if rec := serve(t, s, req); rec.Code != http.StatusCreated {
 		t.Fatalf("valid token in open mode = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// HC-7: Lockout state must survive an AuthManager reload. The saveLocked()
+// calls in authenticate() now log errors instead of silently discarding them,
+// and a writable store should persist the counter across manager restarts.
+func TestLockoutPersistsAcrossReload(t *testing.T) {
+	withFastKDF(t)
+	dir := t.TempDir()
+	authDir := filepath.Join(dir, "auth")
+
+	a, err := NewAuthManager(authDir, true)
+	if err != nil {
+		t.Fatalf("NewAuthManager: %v", err)
+	}
+	if _, err := a.createUser("victim", "victim-long-password", RoleUser, false); err != nil {
+		t.Fatalf("createUser: %v", err)
+	}
+
+	// Trip the lockout with failed attempts.
+	for i := 0; i < maxFailedLogins; i++ {
+		a.authenticate("victim", "wrong-password-value")
+	}
+	// Confirm locked.
+	if _, err := a.authenticate("victim", "victim-long-password"); err != errAccountLocked {
+		t.Fatalf("expected errAccountLocked, got: %v", err)
+	}
+
+	// Reload the auth manager from disk — lockout must survive.
+	a2, err := NewAuthManager(authDir, true)
+	if err != nil {
+		t.Fatalf("reload NewAuthManager: %v", err)
+	}
+	if _, err := a2.authenticate("victim", "victim-long-password"); err != errAccountLocked {
+		t.Fatalf("lockout did not persist across reload: got %v, want errAccountLocked", err)
 	}
 }
