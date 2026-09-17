@@ -504,6 +504,7 @@ func (m *Manager) SubmitMCP(owner, target string, params MCPScanParams, base str
 	if len(m.queue) >= queueCapacity {
 		return nil, fmt.Errorf("queue full, try again when a scan finishes")
 	}
+	// #nosec G304 — base is validated by outputNameRe in buildMCPParams (alphanumerics/._- only, no ".."), joined under resultsDir
 	logFile, err := os.OpenFile(filepath.Join(m.resultsDir, base+".log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("could not create the log file: %w", err)

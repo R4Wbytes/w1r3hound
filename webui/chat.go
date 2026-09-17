@@ -122,7 +122,7 @@ func (cm *ChatManager) SetConfig(apiKey, model string, maxTokens int) error {
 	if maxTokens > 0 {
 		cm.config.MaxTokens = maxTokens
 	}
-	data, _ := json.MarshalIndent(cm.config, "", "  ")
+	data, _ := json.MarshalIndent(cm.config, "", "  ") // #nosec G117 — APIKey is intentionally persisted to the server-side config file (0600); it is never sent to the browser
 	return os.WriteFile(filepath.Join(cm.chatsDir, "config.json"), data, 0o600)
 }
 
@@ -175,6 +175,7 @@ func (cm *ChatManager) saveConversation(c *Conversation) error {
 		return err
 	}
 	tmp := cm.convoPath(c.ID) + ".tmp"
+	// #nosec G703 — c.ID is validated by validConvoID (single path component, no ".."); convoPath joins it under chatsDir
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
