@@ -441,3 +441,18 @@ func TestUnlockUserRequiresAdmin(t *testing.T) {
 		t.Fatalf("target still locked after admin unlock: %v", err)
 	}
 }
+
+func TestAuthTruthy(t *testing.T) {
+	truthy := []string{"1", "true", "TRUE", "True", "required", "yes", "on", " true ", "  YES  "}
+	for _, v := range truthy {
+		if !authTruthy(v) {
+			t.Errorf("expected %q to be truthy", v)
+		}
+	}
+	falsy := []string{"0", "false", "no", "off", "", "maybe", "2"}
+	for _, v := range falsy {
+		if authTruthy(v) {
+			t.Errorf("expected %q to be falsy", v)
+		}
+	}
+}
