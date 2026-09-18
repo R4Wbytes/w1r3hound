@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -831,4 +832,42 @@ func TestCompletionNoParams(t *testing.T) {
 	if len(values) != 0 {
 		t.Errorf("expected empty completions for no params, got %v", values)
 	}
+}
+
+// HC-4: When the output writer breaks (pipe closed), the server must detect it
+// and stop processing instead of silently dropping all subsequent responses.
+func TestServeIOBrokenWriter(t *testing.T) {
+	// brokenWriter fails on every Write after the first successful one.
+	w := &brokenAfterN{max: 1}
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/list"}`,
+		"",
+	}, "\n")
+
+	ServeIO("test-version", strings.NewReader(input), w)
+
+	// The server should have stopped after the first encode error instead of
+	// silently processing all remaining requests. We can't assert the exact
+	// count because the first write may succeed, but subsequent ones must fail
+	// and trigger the encodeErr break in the run loop.
+	if w.writes > 3 {
+		t.Fatalf("server wrote %d times to a broken writer — expected it to stop early", w.writes)
+	}
+}
+
+type brokenAfterN struct {
+	max    int
+	writes int
+}
+
+func (b *brokenAfterN) Write(p []byte) (int, error) {
+	b.writes++
+	if b.writes > b.max {
+		return 0, fmt.Errorf("broken pipe")
+	}
+	return len(p), nil
 }

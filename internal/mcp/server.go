@@ -49,6 +49,7 @@ type Server struct {
 	version    string
 	enc        *json.Encoder
 	mu         sync.Mutex     // serializes writes to stdout
+	encodeErr  atomic.Bool    // set when an encode fails (broken pipe)
 	activeReqs sync.Map       // string(requestID) → context.CancelFunc
 	wg         sync.WaitGroup // tracks in-flight async tool calls
 	logLevel   atomic.Int32   // minimum syslog level for notifications/message
@@ -58,11 +59,14 @@ type Server struct {
 func (s *Server) notify(method string, params any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_ = s.enc.Encode(map[string]any{
+	if err := s.enc.Encode(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  method,
 		"params":  params,
-	})
+	}); err != nil {
+		s.encodeErr.Store(true)
+		log.Printf("mcp: notify encode failed (pipe broken?): %v", err)
+	}
 }
 
 // notifyProgress sends a progress notification only if the client provided a
@@ -117,6 +121,9 @@ func (s *Server) run(r io.Reader) {
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
 
 	for scanner.Scan() {
+		if s.encodeErr.Load() {
+			break
+		}
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
@@ -397,19 +404,25 @@ func (s *Server) sendToolResult(id json.RawMessage, tr toolResult) {
 func (s *Server) send(id json.RawMessage, result any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_ = s.enc.Encode(response{
+	if err := s.enc.Encode(response{
 		JSONRPC: "2.0",
 		ID:      id,
 		Result:  result,
-	})
+	}); err != nil {
+		s.encodeErr.Store(true)
+		log.Printf("mcp: send encode failed (pipe broken?): %v", err)
+	}
 }
 
 func (s *Server) sendError(id json.RawMessage, code int, msg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_ = s.enc.Encode(response{
+	if err := s.enc.Encode(response{
 		JSONRPC: "2.0",
 		ID:      id,
 		Error:   &rpcError{Code: code, Message: msg},
-	})
+	}); err != nil {
+		s.encodeErr.Store(true)
+		log.Printf("mcp: sendError encode failed (pipe broken?): %v", err)
+	}
 }
