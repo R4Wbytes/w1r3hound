@@ -196,6 +196,41 @@ func TestMCPBridgeRawPipeResponseRouting(t *testing.T) {
 	}
 }
 
+// HM-4: Concurrent CallTool requests must be correctly multiplexed —
+// each caller receives its own response, not someone else's.
+func TestMCPBridgeConcurrentCallTool(t *testing.T) {
+	b := newTestBridge(t)
+
+	const n = 5
+	type result struct {
+		text string
+		err  error
+	}
+	results := make(chan result, n)
+
+	for i := 0; i < n; i++ {
+		go func() {
+			text, err := b.CallTool("list_modules", nil)
+			results <- result{text, err}
+		}()
+	}
+
+	for i := 0; i < n; i++ {
+		select {
+		case r := <-results:
+			if r.err != nil {
+				t.Errorf("concurrent CallTool %d: %v", i, r.err)
+				continue
+			}
+			if !strings.Contains(r.text, "recon") {
+				t.Errorf("concurrent CallTool %d: unexpected result %q", i, r.text[:min(len(r.text), 100)])
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("concurrent CallTool %d timed out", i)
+		}
+	}
+}
+
 // HC-3: Scan cancellation must not block forever waiting for the MCP response.
 func TestMCPBridgeScanCancelDoesNotHang(t *testing.T) {
 	b, err := NewMCPBridge("test")
