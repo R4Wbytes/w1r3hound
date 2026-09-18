@@ -390,3 +390,26 @@ func TestSetChatConfigRequiresAdmin(t *testing.T) {
 		t.Fatalf("admin set config = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestHandleChatConfigGET(t *testing.T) {
+	s := newTestServer(t, "")
+	req := loopbackReq("GET", "/api/chat/config", nil)
+	rec := serve(t, s, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/chat/config = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"configured"`) || !strings.Contains(body, `"model"`) {
+		t.Fatalf("response missing expected fields: %s", body)
+	}
+}
+
+func TestHandleChatConfigGET_NoChatManager(t *testing.T) {
+	s := newTestServer(t, "")
+	s.chat = nil
+	req := loopbackReq("GET", "/api/chat/config", nil)
+	rec := serve(t, s, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /api/chat/config with nil chat = %d, want 503", rec.Code)
+	}
+}

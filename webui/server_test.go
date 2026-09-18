@@ -459,3 +459,19 @@ func TestListAndGetScans(t *testing.T) {
 		}
 	})
 }
+
+func TestHandleWorkflowsNoBridge(t *testing.T) {
+	s := newTestServer(t, "")
+	req := loopbackReq("GET", "/api/workflows", nil)
+	rec := serve(t, s, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/workflows (no bridge) = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"workflows"`) {
+		t.Fatalf("response missing workflows key: %s", body)
+	}
+	if !strings.Contains(body, `[]`) {
+		t.Fatalf("expected empty workflow list, got: %s", body)
+	}
+}
