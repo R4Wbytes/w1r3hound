@@ -301,7 +301,9 @@ func (cm *ChatManager) Send(ctx context.Context, convoID, userMsg string, onEven
 		"scan, list_modules, suggest_modules, and server_info tools. Always confirm authorization " +
 		"before scanning. Summarize findings by severity. Never fabricate findings."
 
-	for i := 0; i < 10; i++ {
+	const maxToolIterations = 10
+	var iterCount int
+	for iterCount = 0; iterCount < maxToolIterations; iterCount++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -368,8 +370,9 @@ func (cm *ChatManager) Send(ctx context.Context, convoID, userMsg string, onEven
 
 			onEvent(chatEvent{Type: "tool_result", Tool: tu.Name, ID: tu.ID, Data: truncateToolResult(result, 4000)})
 
+			storedResult := truncateToolResult(result, 65536)
 			convo.Messages = append(convo.Messages, ChatMessage{
-				Role: "tool_result", Content: result,
+				Role: "tool_result", Content: storedResult,
 				ToolUseID: tu.ID, ToolName: tu.Name,
 				Timestamp: time.Now().UTC().Format(time.RFC3339),
 			})
@@ -385,6 +388,10 @@ func (cm *ChatManager) Send(ctx context.Context, convoID, userMsg string, onEven
 			"role":    "user",
 			"content": toolResults,
 		})
+	}
+
+	if iterCount >= maxToolIterations {
+		onEvent(chatEvent{Type: "warning", Data: "Maximum tool iterations (10) reached; response may be incomplete"})
 	}
 
 	if convo.Title == "New conversation" && userMsg != "" {

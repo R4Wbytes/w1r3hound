@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -152,6 +154,45 @@ func TestMCPBridgeSendUnblocksOnConnectionLoss(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("send() blocked forever after bridge closed (HC-2)")
+	}
+}
+
+// HA-6: Verify the bridge correctly routes responses through the
+// error-checked readLoop path using raw pipes (no MCP server).
+func TestMCPBridgeRawPipeResponseRouting(t *testing.T) {
+	fromServerR, fromServerW := io.Pipe()
+	toServerR, toServerW := io.Pipe()
+
+	b := &MCPBridge{
+		toMCP:       toServerW,
+		fromMCP:     bufio.NewScanner(fromServerR),
+		fromMCPPipe: fromServerR,
+		done:        make(chan struct{}),
+		pending:     make(map[string]chan mcpResponse),
+		notifyFns:   make(map[string]func(mcpNotification)),
+	}
+	b.fromMCP.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	go b.readLoop()
+	defer b.Close()
+	go io.Copy(io.Discard, toServerR)
+
+	ch := make(chan mcpResponse, 1)
+	b.pendMu.Lock()
+	b.pending[`1`] = ch
+	b.pendMu.Unlock()
+
+	_, _ = fromServerW.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"ok"}]}}` + "\n"))
+
+	select {
+	case resp := <-ch:
+		if resp.Error != nil {
+			t.Fatalf("expected success, got error: %s", resp.Error.Message)
+		}
+		if len(resp.Result) == 0 {
+			t.Fatal("expected non-empty result")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for response")
 	}
 }
 

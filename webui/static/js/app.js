@@ -733,7 +733,7 @@ document.addEventListener("DOMContentLoaded", () => {
         state.modules = m;
         const list = $("#modules-list");
         if (list) { list.innerHTML = modulesPickerHTML(); wireModulePicker(list); updateModulesCount(); }
-      }).catch(() => {});
+      }).catch((e) => { console.error("modules fetch:", e); });
     }
     $("#mods-all").addEventListener("click", () => { setAllModules(true); });
     $("#mods-none").addEventListener("click", () => { setAllModules(false); });
@@ -947,7 +947,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (cfg.model) $("#set-chat-model").value = cfg.model;
       if (cfg.max_tokens) $("#set-chat-maxtokens").value = cfg.max_tokens;
       $("#chat-config-status").textContent = cfg.configured ? "✓ Key set" : "Not configured";
-    }).catch(() => {});
+    }).catch((e) => { console.error("chat config fetch:", e); });
     $("#btn-save-chat-config").addEventListener("click", async () => {
       try {
         const body = {};

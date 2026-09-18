@@ -591,6 +591,8 @@ func (m *Manager) runMCP(job *Job) {
 
 	if err := writeReportToDisk(m.resultsDir, job.ID, result); err != nil {
 		job.appendLog("[webui] failed to write report: " + err.Error())
+		job.finish(StatusFailed, 1, "report write failed: "+err.Error())
+		return
 	}
 
 	job.appendLog("[webui] MCP scan complete")

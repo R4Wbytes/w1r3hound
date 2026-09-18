@@ -183,6 +183,10 @@ func TestHandleStartScan(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("code = %d, want 400", rec.Code)
 		}
+		body := rec.Body.String()
+		if strings.Contains(body, "ScanRequest") || strings.Contains(body, "json:") {
+			t.Fatalf("error body leaks Go type info: %s", body)
+		}
 	})
 	t.Run("unknown field -> 400", func(t *testing.T) {
 		rec := serve(t, s, loopbackReq("POST", "/api/scan", strings.NewReader(`{"target":"x","authorized":true,"bogus":1}`)))
@@ -238,6 +242,37 @@ func TestHandleStartScan(t *testing.T) {
 			t.Fatalf("resp = %+v, want id+status", resp)
 		}
 	})
+}
+
+// HA-5: The MCP scan path (source:"mcp") must accept valid requests and create a job.
+func TestStartScanMCPSource(t *testing.T) {
+	s := newTestServer(t, "")
+	body := `{"target":"example.com","source":"mcp","authorized":true,"passive":true,"output":"mcp_test_scan"}`
+	req := loopbackReq("POST", "/api/scan", strings.NewReader(body))
+	rec := serve(t, s, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("MCP scan submit = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ID == "" || resp.Status == "" {
+		t.Fatalf("missing id or status: %+v", resp)
+	}
+
+	// Verify the job was created with MCP source via the list endpoint.
+	listReq := loopbackReq("GET", "/api/scans", nil)
+	listRec := serve(t, s, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list scans = %d, want 200", listRec.Code)
+	}
+	if !strings.Contains(listRec.Body.String(), `"source":"mcp"`) {
+		t.Fatalf("job not listed with source mcp: %s", listRec.Body.String())
+	}
 }
 
 func TestConfinedResultFile(t *testing.T) {

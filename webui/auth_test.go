@@ -400,3 +400,44 @@ func TestLockoutPersistsAcrossReload(t *testing.T) {
 		t.Fatalf("lockout did not persist across reload: got %v, want errAccountLocked", err)
 	}
 }
+
+// HA-4: handleUnlockUser requires admin role.
+func TestUnlockUserRequiresAdmin(t *testing.T) {
+	s, adminCookie, adminCSRF := newAuthTestServer(t, "boss", "boss-long-password")
+
+	// Create a regular user and lock them.
+	if _, err := s.auth.createUser("target", "target-long-password", RoleUser, false); err != nil {
+		t.Fatalf("createUser: %v", err)
+	}
+	for i := 0; i < maxFailedLogins; i++ {
+		s.auth.authenticate("target", "wrong")
+	}
+	if _, err := s.auth.authenticate("target", "target-long-password"); err != errAccountLocked {
+		t.Fatalf("expected target locked, got: %v", err)
+	}
+
+	// Create a non-admin session.
+	rawUser, sessUser, err := s.auth.createSession("target", RoleUser)
+	if err != nil {
+		t.Fatalf("createSession user: %v", err)
+	}
+	userCookie := &http.Cookie{Name: sessionCookieName, Value: rawUser}
+	userCSRF := sessUser.CSRFToken
+
+	// Non-admin unlock -> 403.
+	req := authReq("POST", "/api/auth/users/target/unlock", "", userCookie, userCSRF)
+	if rec := serve(t, s, req); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-admin unlock = %d, want 403", rec.Code)
+	}
+
+	// Admin unlock -> 200.
+	req = authReq("POST", "/api/auth/users/target/unlock", "", adminCookie, adminCSRF)
+	if rec := serve(t, s, req); rec.Code != http.StatusOK {
+		t.Fatalf("admin unlock = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Verify target can log in again.
+	if _, err := s.auth.authenticate("target", "target-long-password"); err != nil {
+		t.Fatalf("target still locked after admin unlock: %v", err)
+	}
+}

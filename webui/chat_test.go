@@ -257,3 +257,136 @@ func TestCallLLMErrorSanitized(t *testing.T) {
 		t.Fatalf("error should mention status code 401, got: %s", errMsg)
 	}
 }
+
+// HA-2: When the tool-use loop hits its 10-iteration cap, a warning event
+// must be emitted before "done" so the user knows the response was truncated.
+func TestChatSendMaxIterationsWarning(t *testing.T) {
+	// Mock LLM that always returns a tool_use block, never a plain text stop.
+	sseAlwaysToolUse := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_loop","type":"message","role":"assistant","model":"test","stop_reason":null}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_loop","name":"server_info"}}`,
+		"",
+		"event: content_block_delta",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}`,
+		"",
+		"event: content_block_stop",
+		`data: {"type":"content_block_stop","index":0}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, sseAlwaysToolUse)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cm, err := NewChatManager(dir, nil)
+	if err != nil {
+		t.Fatalf("NewChatManager: %v", err)
+	}
+	cm.config.APIKey = "test-key"
+	cm.config.Endpoint = srv.URL
+	cm.config.Model = "test-model"
+	cm.config.MaxTokens = 1024
+
+	convo, err := cm.CreateConversation("test", "Loop test")
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	var events []chatEvent
+	err = cm.Send(context.Background(), convo.ID, "trigger loop", func(e chatEvent) {
+		events = append(events, e)
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	// Find the warning event.
+	var gotWarning, gotDone bool
+	var warningIdx, doneIdx int
+	for i, e := range events {
+		if e.Type == "warning" && strings.Contains(e.Data, "iterations") {
+			gotWarning = true
+			warningIdx = i
+		}
+		if e.Type == "done" {
+			gotDone = true
+			doneIdx = i
+		}
+	}
+	if !gotWarning {
+		t.Fatal("no warning event emitted when tool-use loop hit max iterations")
+	}
+	if !gotDone {
+		t.Fatal("no done event emitted")
+	}
+	if warningIdx >= doneIdx {
+		t.Fatalf("warning event (idx %d) must come before done event (idx %d)", warningIdx, doneIdx)
+	}
+}
+
+// HB-2: handleChatCreate must return 400 for malformed JSON body.
+func TestHandleChatCreateMalformedBody(t *testing.T) {
+	s := newTestServer(t, "")
+	req := loopbackReq("POST", "/api/chat/conversations", strings.NewReader("{bad json"))
+	rec := serve(t, s, req)
+	if rec.Code != 400 {
+		t.Fatalf("expected 400 for malformed JSON, got %d; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// HA-4: handleChatCreate returns 201 with valid JSON.
+func TestHandleChatCreateValid(t *testing.T) {
+	s := newTestServer(t, "")
+	req := loopbackReq("POST", "/api/chat/conversations", strings.NewReader(`{"title":"Test Chat"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(t, s, req)
+	if rec.Code != 201 {
+		t.Fatalf("expected 201, got %d; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Test Chat") {
+		t.Fatalf("response should contain title, got: %s", body)
+	}
+	if !strings.Contains(body, `"id"`) {
+		t.Fatalf("response should contain conversation id, got: %s", body)
+	}
+}
+
+// HA-4: handleSetChatConfig requires admin when auth is enabled.
+func TestSetChatConfigRequiresAdmin(t *testing.T) {
+	s, adminCookie, adminCSRF := newAuthTestServer(t, "cfgadmin", "cfgadmin-long-password")
+
+	configBody := `{"api_key":"sk-test","model":"claude-sonnet-5","max_tokens":4096}`
+
+	// Non-admin user POST -> 403.
+	if _, err := s.auth.createUser("viewer", "viewer-long-password", RoleUser, false); err != nil {
+		t.Fatalf("createUser: %v", err)
+	}
+	rawUser, sessUser, err := s.auth.createSession("viewer", RoleUser)
+	if err != nil {
+		t.Fatalf("createSession user: %v", err)
+	}
+	userCookie := &http.Cookie{Name: sessionCookieName, Value: rawUser}
+	userCSRF := sessUser.CSRFToken
+
+	req := authReq("POST", "/api/chat/config", configBody, userCookie, userCSRF)
+	if rec := serve(t, s, req); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-admin set config = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Admin POST -> 200.
+	req = authReq("POST", "/api/chat/config", configBody, adminCookie, adminCSRF)
+	if rec := serve(t, s, req); rec.Code != http.StatusOK {
+		t.Fatalf("admin set config = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}

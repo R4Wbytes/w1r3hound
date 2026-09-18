@@ -66,8 +66,8 @@ type MCPScanParams struct {
 // MCPBridge holds a persistent in-process connection to the MCP server via
 // io.Pipe. One bridge per webui process; it multiplexes requests by ID.
 type MCPBridge struct {
-	toMCP      io.WriteCloser
-	fromMCP    *bufio.Scanner
+	toMCP       io.WriteCloser
+	fromMCP     *bufio.Scanner
 	fromMCPPipe io.Closer // read end of the response pipe
 
 	reqID atomic.Int64
@@ -85,12 +85,12 @@ func NewMCPBridge(version string) (*MCPBridge, error) {
 	rr, rw := io.Pipe()
 
 	b := &MCPBridge{
-		toMCP:      pw,
-		fromMCP:    bufio.NewScanner(rr),
+		toMCP:       pw,
+		fromMCP:     bufio.NewScanner(rr),
 		fromMCPPipe: rr,
-		done:       make(chan struct{}),
-		pending:    make(map[string]chan mcpResponse),
-		notifyFns:  make(map[string]func(mcpNotification)),
+		done:        make(chan struct{}),
+		pending:     make(map[string]chan mcpResponse),
+		notifyFns:   make(map[string]func(mcpNotification)),
 	}
 	b.fromMCP.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
 
@@ -122,7 +122,15 @@ func (b *MCPBridge) readLoop() {
 
 		if len(envelope.ID) > 0 && envelope.ID[0] != 'n' {
 			var resp mcpResponse
-			_ = json.Unmarshal(line, &resp)
+			if err := json.Unmarshal(line, &resp); err != nil {
+				resp = mcpResponse{
+					ID: envelope.ID,
+					Error: &struct {
+						Code    int    `json:"code"`
+						Message string `json:"message"`
+					}{Code: -32700, Message: "parse error"},
+				}
+			}
 			key := string(resp.ID)
 
 			b.pendMu.Lock()
@@ -140,7 +148,9 @@ func (b *MCPBridge) readLoop() {
 
 		if envelope.Method != "" {
 			var notif mcpNotification
-			_ = json.Unmarshal(line, &notif)
+			if err := json.Unmarshal(line, &notif); err != nil {
+				continue
+			}
 			// Route by progressToken so concurrent scans get their own callbacks.
 			var token string
 			var params struct {

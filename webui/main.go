@@ -333,7 +333,8 @@ func (s *server) handleStartScan(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(io.LimitReader(r.Body, 64*1024))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		log.Printf("scan: invalid JSON from client: %v", err)
+		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	owner := ""
@@ -650,7 +651,10 @@ func (s *server) handleChatCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title string `json:"title"`
 	}
-	_ = json.NewDecoder(io.LimitReader(r.Body, 4*1024)).Decode(&body)
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4*1024)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
 	owner := s.chatOwner(r)
 	convo, err := s.chat.CreateConversation(owner, body.Title)
 	if err != nil {
