@@ -325,6 +325,8 @@ a { color: inherit; }
 }
 .icon-btn svg { stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; width: 16px; height: 16px; }
 .icon-btn:hover { background: var(--bg-hover); color: var(--text-secondary); border-color: var(--border); }
+.icon-btn-danger { color: var(--text-dim); }
+.icon-btn-danger:hover { color: var(--accent-red); background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.3); }
 
 /* ============================================
    Cards & grids
@@ -995,6 +997,7 @@ textarea.form-input { min-height: 64px; resize: vertical; line-height: 1.5; }
 /* ═══ SOURCE BADGES ═══ */
 .source-badge { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; text-transform: uppercase; letter-spacing: .04em; vertical-align: middle; }
 .source-mcp { background: rgba(139,92,246,.18); color: #a78bfa; border: 1px solid rgba(139,92,246,.3); }
+.source-cli { background: rgba(59,130,246,.18); color: #60a5fa; border: 1px solid rgba(59,130,246,.3); }
 
 /* ═══ WORKFLOW CARDS ═══ */
 .wf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; padding: 4px 0; }

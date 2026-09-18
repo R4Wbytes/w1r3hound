@@ -45,7 +45,7 @@ type Job struct {
 	Target    string    `json:"target"`
 	Owner     string    `json:"owner,omitempty"` // submitting username; empty in open mode
 	Args      []string  `json:"args"`
-	Source    string    `json:"source"` // "cli" or "mcp"
+	Source    string    `json:"source"` // "webui", "cli", or "mcp"
 	Status    JobStatus `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
 	StartedAt time.Time `json:"started_at,omitempty"`
@@ -154,7 +154,7 @@ type ScanSummary struct {
 	ID        string         `json:"id"`
 	Target    string         `json:"target"`
 	Owner     string         `json:"-"`                // server-side only: used for per-user access control
-	Source    string         `json:"source,omitempty"` // "cli" or "mcp"
+	Source    string         `json:"source,omitempty"` // "webui", "cli", or "mcp"
 	Status    JobStatus      `json:"status"`
 	CreatedAt string         `json:"created_at,omitempty"`
 	StartedAt string         `json:"started_at,omitempty"`
@@ -268,6 +268,7 @@ func (m *Manager) Submit(owner, target string, args []string, base string) (*Job
 	if werr := writeScanMeta(m.resultsDir, base, scanMeta{
 		Owner:     owner,
 		Target:    target,
+		Source:    "webui",
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}); werr != nil {
 		log.Printf("could not persist ownership metadata for scan %q: %v", base, werr)
@@ -277,7 +278,7 @@ func (m *Manager) Submit(owner, target string, args []string, base string) (*Job
 		Target:    target,
 		Owner:     owner,
 		Args:      args,
-		Source:    "cli",
+		Source:    "webui",
 		Status:    StatusQueued,
 		CreatedAt: time.Now(),
 		BasePath:  filepath.Join(m.resultsDir, base),
@@ -294,6 +295,7 @@ func (m *Manager) Submit(owner, target string, args []string, base string) (*Job
 type scanMeta struct {
 	Owner     string `json:"owner"`
 	Target    string `json:"target"`
+	Source    string `json:"source,omitempty"`
 	CreatedAt string `json:"created_at,omitempty"`
 }
 
@@ -360,6 +362,33 @@ func (m *Manager) Get(id string) (*Job, bool) {
 	defer m.mu.RUnlock()
 	j, ok := m.jobs[id]
 	return j, ok
+}
+
+// Delete removes all files associated with a completed scan and evicts it
+// from the in-memory job map. It refuses to delete a scan that is still
+// queued or running.
+func (m *Manager) Delete(id string) error {
+	if !validScanID(id) {
+		return fmt.Errorf("invalid scan id")
+	}
+	m.mu.Lock()
+	if job, ok := m.jobs[id]; ok {
+		job.mu.Lock()
+		st := job.Status
+		job.mu.Unlock()
+		if st == StatusQueued || st == StatusRunning {
+			m.mu.Unlock()
+			return fmt.Errorf("cannot delete a scan that is still %s", st)
+		}
+		delete(m.jobs, id)
+	}
+	m.mu.Unlock()
+
+	for _, ext := range []string{".json", ".md", ".log", ".meta.json"} {
+		p := filepath.Join(m.resultsDir, id+ext)
+		_ = os.Remove(p)
+	}
+	return nil
 }
 
 // Cancel requests termination of a queued or running job.
@@ -512,6 +541,7 @@ func (m *Manager) SubmitMCP(owner, target string, params MCPScanParams, base str
 	if werr := writeScanMeta(m.resultsDir, base, scanMeta{
 		Owner:     owner,
 		Target:    target,
+		Source:    "mcp",
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}); werr != nil {
 		log.Printf("could not persist ownership metadata for scan %q: %v", base, werr)
@@ -675,14 +705,16 @@ func (m *Manager) List() []ScanSummary {
 		if err != nil {
 			continue
 		}
-		owner := ""
+		var owner, source string
 		if meta, err := readScanMeta(m.resultsDir, base); err == nil {
 			owner = meta.Owner
+			source = meta.Source
 		}
 		out = append(out, ScanSummary{
 			ID:        base,
 			Target:    rep.Target,
 			Owner:     owner,
+			Source:    source,
 			Status:    StatusDone,
 			StartedAt: rep.StartedAt,
 			EndedAt:   rep.EndedAt,

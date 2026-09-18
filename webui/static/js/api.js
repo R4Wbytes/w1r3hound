@@ -110,6 +110,9 @@ const API = (() => {
     async cancel(id) {
       return json(`/api/scans/${encodeURIComponent(id)}/cancel`, { method: "POST" });
     },
+    async deleteScan(id) {
+      return json(`/api/scans/${encodeURIComponent(id)}`, { method: "DELETE" });
+    },
     async report(id) {
       const res = await req(`/api/scans/${encodeURIComponent(id)}/report.json`);
       if (!res.ok) throw new Error(`report unavailable (HTTP ${res.status})`);

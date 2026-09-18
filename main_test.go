@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // TestMapProtocolResolves covers the -m/-protocols resolution: themed aliases
 // and legacy aliases map to internal names, and internal names pass through.
@@ -107,5 +112,66 @@ func TestHeaderFlags(t *testing.T) {
 		if err := headers.Set(raw); err == nil {
 			t.Errorf("headerFlags.Set(%q) unexpectedly succeeded", raw)
 		}
+	}
+}
+
+func TestResolveResultsDir(t *testing.T) {
+	dir := resolveResultsDir()
+	if dir == "" {
+		t.Fatal("resolveResultsDir returned empty string")
+	}
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("results dir does not exist: %v", err)
+	}
+	if !fi.IsDir() {
+		t.Fatalf("results dir is not a directory")
+	}
+	if filepath.Base(dir) != "results" {
+		t.Fatalf("results dir = %q, want basename 'results'", dir)
+	}
+}
+
+func TestWriteCLIMeta(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "test_scan")
+
+	writeCLIMeta(base, "https://example.com")
+
+	metaPath := base + ".meta.json"
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("meta file not created: %v", err)
+	}
+
+	var meta struct {
+		Owner     string `json:"owner"`
+		Target    string `json:"target"`
+		Source    string `json:"source"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if meta.Source != "cli" {
+		t.Fatalf("source = %q, want 'cli'", meta.Source)
+	}
+	if meta.Target != "https://example.com" {
+		t.Fatalf("target = %q, want 'https://example.com'", meta.Target)
+	}
+	if meta.Owner != "" {
+		t.Fatalf("owner = %q, want empty (CLI has no user context)", meta.Owner)
+	}
+	if meta.CreatedAt == "" {
+		t.Fatal("created_at is empty")
+	}
+
+	// Verify permissions are restrictive.
+	fi, err := os.Stat(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		t.Fatalf("meta file permissions = %o, want no group/other access", perm)
 	}
 }

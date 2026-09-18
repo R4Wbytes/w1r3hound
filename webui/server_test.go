@@ -460,6 +460,139 @@ func TestListAndGetScans(t *testing.T) {
 	})
 }
 
+func TestHandleDeleteScan(t *testing.T) {
+	s := newTestServer(t, "")
+	// Seed files on disk to simulate a completed scan.
+	for _, ext := range []string{".json", ".md", ".log", ".meta.json"} {
+		if err := os.WriteFile(filepath.Join(s.mgr.resultsDir, "del1"+ext), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("delete completed scan", func(t *testing.T) {
+		rec := serve(t, s, loopbackReq("DELETE", "/api/scans/del1", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+		for _, ext := range []string{".json", ".md", ".log", ".meta.json"} {
+			if _, err := os.Stat(filepath.Join(s.mgr.resultsDir, "del1"+ext)); err == nil {
+				t.Fatalf("file del1%s still exists after delete", ext)
+			}
+		}
+	})
+
+	t.Run("delete nonexistent -> 404", func(t *testing.T) {
+		rec := serve(t, s, loopbackReq("DELETE", "/api/scans/ghost", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("code = %d, want 404", rec.Code)
+		}
+	})
+
+	t.Run("delete running scan -> conflict", func(t *testing.T) {
+		j := &Job{ID: "live2", Target: "127.0.0.1", Status: StatusRunning,
+			subs: make(map[chan string]struct{})}
+		s.mgr.mu.Lock()
+		s.mgr.jobs["live2"] = j
+		s.mgr.mu.Unlock()
+
+		rec := serve(t, s, loopbackReq("DELETE", "/api/scans/live2", nil))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("code = %d, want 409", rec.Code)
+		}
+	})
+
+	t.Run("path traversal -> 404", func(t *testing.T) {
+		rec := serve(t, s, loopbackReq("DELETE", "/api/scans/..%2f..%2fetc%2fpasswd", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("code = %d, want 404", rec.Code)
+		}
+	})
+}
+
+func TestDeleteScanAuthGated(t *testing.T) {
+	withFastKDF(t)
+	s, adminCookie, adminCSRF := newAuthTestServer(t, "admin", "admins-long-password")
+
+	// Create a regular user.
+	if _, err := s.auth.createUser("alice", "alices-long-password", RoleUser, false); err != nil {
+		t.Fatalf("createUser: %v", err)
+	}
+	aliceRaw, aliceSess, err := s.auth.createSession("alice", RoleUser)
+	if err != nil {
+		t.Fatalf("createSession: %v", err)
+	}
+	aliceCookie := &http.Cookie{Name: sessionCookieName, Value: aliceRaw}
+	aliceCSRF := aliceSess.CSRFToken
+
+	// Seed a scan owned by admin.
+	for _, ext := range []string{".json", ".meta.json"} {
+		if err := os.WriteFile(filepath.Join(s.mgr.resultsDir, "adminscan"+ext), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(s.mgr.resultsDir, "adminscan.meta.json"),
+		[]byte(`{"owner":"admin","target":"example.com"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("non-owner cannot delete", func(t *testing.T) {
+		rec := serve(t, s, authReq("DELETE", "/api/scans/adminscan", "", aliceCookie, aliceCSRF))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("code = %d, want 404", rec.Code)
+		}
+		if _, err := os.Stat(filepath.Join(s.mgr.resultsDir, "adminscan.json")); err != nil {
+			t.Fatal("file should still exist after non-owner delete attempt")
+		}
+	})
+
+	t.Run("admin can delete any scan", func(t *testing.T) {
+		rec := serve(t, s, authReq("DELETE", "/api/scans/adminscan", "", adminCookie, adminCSRF))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("unauthenticated delete rejected", func(t *testing.T) {
+		rec := serve(t, s, loopbackReq("DELETE", "/api/scans/adminscan", nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("code = %d, want 401", rec.Code)
+		}
+	})
+}
+
+func TestDeleteScanSourcePersistence(t *testing.T) {
+	s := newTestServer(t, "")
+
+	// Simulate a CLI-originated scan with source in meta.
+	report := `{"target":"example.com","started_at":"2026-01-01T00:00:00Z","ended_at":"2026-01-01T00:01:00Z","findings":[]}`
+	meta := `{"owner":"","target":"example.com","source":"cli","created_at":"2026-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(s.mgr.resultsDir, "cliscan.json"), []byte(report), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.mgr.resultsDir, "cliscan.meta.json"), []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify List() recovers the source field.
+	scans := s.mgr.List()
+	var found *ScanSummary
+	for i := range scans {
+		if scans[i].ID == "cliscan" {
+			found = &scans[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("cliscan not found in List()")
+	}
+	if found.Source != "cli" {
+		t.Fatalf("source = %q, want %q", found.Source, "cli")
+	}
+	if found.Target != "example.com" {
+		t.Fatalf("target = %q, want %q", found.Target, "example.com")
+	}
+}
+
 func TestHandleWorkflowsNoBridge(t *testing.T) {
 	s := newTestServer(t, "")
 	req := loopbackReq("GET", "/api/workflows", nil)

@@ -12,11 +12,13 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -310,11 +312,14 @@ func main() {
 	// apex so isSubdomain() helpers can identify subdomains of the target.
 	cfg.RootDomains = []string{cfg.Domain}
 
+	baseName := fmt.Sprintf("w1r3hound_%s_%s", sanitize(cfg.Domain), time.Now().UTC().Format("20060102_150405"))
+	sharedResults := false
 	if cfg.OutputFile == "" {
-		// UTC to match core.NewReport/Finalize, which both timestamp in UTC —
-		// otherwise the filename and the report's own started_at/ended_at
-		// fields can disagree by the local UTC offset.
-		cfg.OutputFile = fmt.Sprintf("w1r3hound_%s_%s", sanitize(cfg.Domain), time.Now().UTC().Format("20060102_150405"))
+		cfg.OutputFile = filepath.Join(resolveResultsDir(), baseName)
+		sharedResults = true
+	}
+	if sharedResults {
+		writeCLIMeta(cfg.OutputFile, cfg.Target)
 	}
 
 	// ── Initialize ──
@@ -645,4 +650,57 @@ func modeLabel(passive bool) string {
 		return "PASSIVE // Signals only"
 	}
 	return "ACTIVE // Full system breach"
+}
+
+// resolveResultsDir returns the shared results directory (webui/results/)
+// so CLI and GUI scans land in the same place. It tries the binary's
+// directory first, then the working directory.
+func resolveResultsDir() string {
+	isRoot := func(dir string) bool {
+		for _, name := range []string{"main.go", "go.mod", "internal"} {
+			if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+				return false
+			}
+		}
+		return true
+	}
+	var candidates []string
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Dir(exe))
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, cwd)
+	}
+	for _, c := range candidates {
+		abs, err := filepath.Abs(c)
+		if err != nil {
+			continue
+		}
+		if isRoot(abs) {
+			dir := filepath.Join(abs, "webui", "results")
+			_ = os.MkdirAll(dir, 0o700)
+			return dir
+		}
+	}
+	return "."
+}
+
+// writeCLIMeta writes a .meta.json sidecar next to the report so the GUI
+// can attribute CLI-originated scans and enforce per-user access control.
+func writeCLIMeta(outputBase, target string) {
+	meta := struct {
+		Owner     string `json:"owner"`
+		Target    string `json:"target"`
+		Source    string `json:"source"`
+		CreatedAt string `json:"created_at"`
+	}{
+		Target:    target,
+		Source:    "cli",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(outputBase+".meta.json", data, 0o600)
 }

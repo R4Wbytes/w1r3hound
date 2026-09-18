@@ -314,7 +314,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <div class="audit-row-main">
           <div class="audit-row-target">${esc(s.target || s.id)}</div>
           <div class="audit-row-meta">
-            ${Utils.scanStatusBadge(s.status)}${s.source === "mcp" ? ' <span class="source-badge source-mcp">MCP</span>' : ""}
+            ${Utils.scanStatusBadge(s.status)}${s.source === "mcp" ? ' <span class="source-badge source-mcp">MCP</span>' : ""}${s.source === "cli" ? ' <span class="source-badge source-cli">CLI</span>' : ""}
             <span class="audit-row-findings">${s.has_report ? (s.total_findings + " findings") : "no report"}</span>
             <span>${esc(Utils.fmtDate(s.started_at || s.created_at))}</span>
             <span>${esc(Utils.fmtDuration(s.started_at, s.ended_at))}</span>
@@ -327,7 +327,9 @@ document.addEventListener("DOMContentLoaded", () => {
           ${s.has_report ? `<button class="icon-btn js-open-findings" title="View findings" data-scan="${esc(s.id)}">
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4"/><circle cx="12" cy="16" r="0.5" fill="currentColor"/></svg>
           </button>` : ""}
-          ${live ? `<button class="btn-mini danger js-cancel-scan" data-scan="${esc(s.id)}">■ cancel</button>` : ""}
+          ${live ? `<button class="btn-mini danger js-cancel-scan" data-scan="${esc(s.id)}">■ cancel</button>` : `<button class="icon-btn icon-btn-danger js-delete-scan" title="Delete scan" data-scan="${esc(s.id)}">
+            <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+          </button>`}
         </div>
       </div>`;
     }).join("")}</div>`;
@@ -640,6 +642,36 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       toast("Cancel failed: " + err.message, "error");
     }
+  }
+
+  function confirmDeleteScan(scanId) {
+    const scan = scanById(scanId);
+    const label = scan ? (scan.target || scanId) : scanId;
+    openModal(`
+      <div class="modal-header"><h2>Delete scan</h2><button class="modal-close">&times;</button></div>
+      <div class="modal-body"><p class="modal-note">Delete <strong>${esc(label)}</strong>? This removes the report, log and metadata files permanently.</p></div>
+      <div class="modal-footer"><button class="btn-secondary modal-close">Cancel</button><button class="btn-danger" id="del-scan-confirm">Delete scan</button></div>`);
+    $("#del-scan-confirm").addEventListener("click", async function handler() {
+      this.disabled = true;
+      this.textContent = "Deleting…";
+      try {
+        await API.deleteScan(scanId);
+        closeModal();
+        toast("Scan deleted", "success");
+        delete state.findingsCache[scanId];
+        delete state.logs[scanId];
+        if (state.consoleScanId === scanId) {
+          state.consoleScanId = null;
+          state.lastRenderedConsoleId = null;
+        }
+        if (state.findingScanId === scanId) state.findingScanId = null;
+        refreshScans();
+      } catch (err) {
+        this.disabled = false;
+        this.textContent = "Delete scan";
+        toast("Delete failed: " + err.message, "error");
+      }
+    });
   }
 
   /* ══════════════════════════════════════════════════════
@@ -1319,6 +1351,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (findingsBtn) { e.stopPropagation(); state.findingScanId = findingsBtn.dataset.scan; navigateTo("findings"); return; }
     const cancelBtn = t.closest(".js-cancel-scan");
     if (cancelBtn) { e.stopPropagation(); cancelScan(cancelBtn.dataset.scan); return; }
+    const deleteBtn = t.closest(".js-delete-scan");
+    if (deleteBtn) { e.stopPropagation(); confirmDeleteScan(deleteBtn.dataset.scan); return; }
 
     const tab = t.closest("[data-console-tab]");
     if (tab) { openConsole(tab.dataset.consoleTab); return; }

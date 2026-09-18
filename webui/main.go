@@ -152,6 +152,7 @@ func (s *server) handler() (http.Handler, error) {
 	mux.HandleFunc("GET /api/scans", s.handleListScans)
 	mux.HandleFunc("GET /api/scans/{id}", s.handleGetScan)
 	mux.HandleFunc("POST /api/scans/{id}/cancel", s.handleCancelScan)
+	mux.HandleFunc("DELETE /api/scans/{id}", s.handleDeleteScan)
 	mux.HandleFunc("GET /api/scans/{id}/events", s.handleEvents)
 	mux.HandleFunc("GET /api/scans/{id}/log", s.handleLog)
 	mux.HandleFunc("GET /api/scans/{id}/report.json", s.handleReport("json"))
@@ -424,6 +425,27 @@ func (s *server) handleCancelScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelling"})
+}
+
+func (s *server) handleDeleteScan(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	owner, known := s.mgr.ownerOf(id)
+	if !known {
+		writeError(w, http.StatusNotFound, "scan not found")
+		return
+	}
+	if !s.canAccessScan(r, owner) {
+		writeError(w, http.StatusNotFound, "scan not found")
+		return
+	}
+	if err := s.mgr.Delete(id); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // handleEvents streams the scan log as Server-Sent Events: first a replay of
