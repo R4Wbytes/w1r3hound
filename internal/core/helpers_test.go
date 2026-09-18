@@ -203,8 +203,8 @@ func TestRecoverWorker(t *testing.T) {
 
 	done := make(chan bool, 1)
 	go func() {
-		defer RecoverWorker(log, "test-module")
 		defer func() { done <- true }()
+		defer RecoverWorker(log, "test-module")
 		panic("intentional test panic")
 	}()
 	<-done
