@@ -328,6 +328,100 @@ func TestBuildArgsNumericAndValueBounds(t *testing.T) {
 	}
 }
 
+func TestBuildMCPParams_AuthorizationRequired(t *testing.T) {
+	_, _, err := buildMCPParams(&ScanRequest{Target: "example.com"}, t.TempDir(), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "authorized") {
+		t.Fatalf("expected authorization error, got: %v", err)
+	}
+}
+
+func TestBuildMCPParams_MinimalValid(t *testing.T) {
+	resultsDir := t.TempDir()
+	params, base, err := buildMCPParams(&ScanRequest{
+		Target:     "example.com",
+		Authorized: true,
+	}, t.TempDir(), resultsDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if params.Target != "example.com" {
+		t.Errorf("target = %q, want example.com", params.Target)
+	}
+	if base == "" {
+		t.Fatal("expected auto-generated output base name")
+	}
+	if !strings.HasPrefix(base, "w1r3hound_example_com_") {
+		t.Errorf("base = %q, expected prefix w1r3hound_example_com_", base)
+	}
+}
+
+func TestBuildMCPParams_BoundaryValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		req  ScanRequest
+		want string
+	}{
+		{"concurrency over max", ScanRequest{Target: "example.com", Authorized: true, Concurrency: 999}, "concurrency"},
+		{"rate over max", ScanRequest{Target: "example.com", Authorized: true, Rate: 99999}, "rate"},
+		{"timeout over max", ScanRequest{Target: "example.com", Authorized: true, TimeoutSec: 9999}, "timeout"},
+		{"invalid ports", ScanRequest{Target: "example.com", Authorized: true, Ports: "evil"}, "ports"},
+		{"user-agent CRLF", ScanRequest{Target: "example.com", Authorized: true, UserAgent: "foo\r\nbar"}, "user-agent"},
+		{"user-agent too long", ScanRequest{Target: "example.com", Authorized: true, UserAgent: strings.Repeat("x", 300)}, "user-agent"},
+		{"output path traversal", ScanRequest{Target: "example.com", Authorized: true, Output: "../etc/passwd"}, "output"},
+		{"output dotdot", ScanRequest{Target: "example.com", Authorized: true, Output: "foo..bar"}, "output"},
+		{"dir-ext injection", ScanRequest{Target: "example.com", Authorized: true, DirExt: "$(whoami)"}, "dir-ext"},
+		{"resolver hostname", ScanRequest{Target: "example.com", Authorized: true, Resolver: "evil.com"}, "resolver"},
+		{"wayback over max", ScanRequest{Target: "example.com", Authorized: true, WaybackLimit: 999999}, "wayback"},
+		{"crawl over max", ScanRequest{Target: "example.com", Authorized: true, CrawlPages: 9999}, "crawl"},
+		{"js-files over max", ScanRequest{Target: "example.com", Authorized: true, JSFiles: 9999}, "js-files"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := buildMCPParams(&tc.req, t.TempDir(), t.TempDir())
+			if err == nil {
+				t.Fatalf("expected error containing %q", tc.want)
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), tc.want) {
+				t.Fatalf("error %q should contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildMCPParams_CustomOutput(t *testing.T) {
+	params, base, err := buildMCPParams(&ScanRequest{
+		Target:     "example.com",
+		Authorized: true,
+		Output:     "my_scan_report",
+	}, t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if base != "my_scan_report" {
+		t.Errorf("base = %q, want my_scan_report", base)
+	}
+	if params.Target != "example.com" {
+		t.Errorf("target = %q", params.Target)
+	}
+}
+
+func TestBuildMCPParams_Headers(t *testing.T) {
+	params, _, err := buildMCPParams(&ScanRequest{
+		Target:     "example.com",
+		Authorized: true,
+		Headers:    []string{"X-Custom: value1", "Authorization: Bearer tok"},
+	}, t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if params.Headers["X-Custom"] != "value1" {
+		t.Errorf("X-Custom = %q, want value1", params.Headers["X-Custom"])
+	}
+	if params.Headers["Authorization"] != "Bearer tok" {
+		t.Errorf("Authorization = %q, want Bearer tok", params.Headers["Authorization"])
+	}
+}
+
 func TestSanitizeAndDomainHelpers(t *testing.T) {
 	if got := sanitizeForFilename("a.b/c:d"); got != "a_b_c_d" {
 		t.Fatalf("sanitizeForFilename = %q", got)

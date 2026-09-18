@@ -413,3 +413,163 @@ func TestHandleChatConfigGET_NoChatManager(t *testing.T) {
 		t.Fatalf("GET /api/chat/config with nil chat = %d, want 503", rec.Code)
 	}
 }
+
+func TestHandleChatConversations_ListsOwned(t *testing.T) {
+	s := newTestServer(t, "")
+	_, _ = s.chat.CreateConversation("default", "My Chat")
+	req := loopbackReq("GET", "/api/chat/conversations", nil)
+	rec := serve(t, s, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "My Chat") {
+		t.Fatalf("expected conversation in list, got: %s", body)
+	}
+}
+
+func TestHandleChatConversations_NilChat(t *testing.T) {
+	s := newTestServer(t, "")
+	s.chat = nil
+	req := loopbackReq("GET", "/api/chat/conversations", nil)
+	rec := serve(t, s, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code = %d, want 503", rec.Code)
+	}
+}
+
+func TestHandleChatConversations_OwnerIsolation(t *testing.T) {
+	s, adminCookie, _ := newAuthTestServer(t, "chatadmin", "chatadmin-long-password")
+	_, _ = s.chat.CreateConversation("chatadmin", "Admin Chat")
+	_, _ = s.chat.CreateConversation("otheruser", "Other Chat")
+
+	req := authReq("GET", "/api/chat/conversations", "", adminCookie, "")
+	rec := serve(t, s, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// Admin sees all conversations
+	if !strings.Contains(body, "Admin Chat") || !strings.Contains(body, "Other Chat") {
+		t.Fatalf("admin should see all convos, got: %s", body)
+	}
+
+	// Non-admin only sees their own
+	if _, err := s.auth.createUser("viewer2", "viewer2-long-password", RoleUser, false); err != nil {
+		t.Fatalf("createUser: %v", err)
+	}
+	raw, _, err := s.auth.createSession("viewer2", RoleUser)
+	if err != nil {
+		t.Fatalf("createSession: %v", err)
+	}
+	userCookie := &http.Cookie{Name: sessionCookieName, Value: raw}
+	req = authReq("GET", "/api/chat/conversations", "", userCookie, "")
+	rec = serve(t, s, req)
+	body = rec.Body.String()
+	if strings.Contains(body, "Admin Chat") || strings.Contains(body, "Other Chat") {
+		t.Fatalf("non-admin should not see other convos, got: %s", body)
+	}
+}
+
+func TestHandleChatGet_OwnershipEnforced(t *testing.T) {
+	s, _, _ := newAuthTestServer(t, "getadmin", "getadmin-long-password")
+	convo, _ := s.chat.CreateConversation("getadmin", "Private")
+
+	// Non-admin trying to read admin's convo -> 404
+	if _, err := s.auth.createUser("intruder", "intruder-long-password", RoleUser, false); err != nil {
+		t.Fatalf("createUser: %v", err)
+	}
+	raw, _, _ := s.auth.createSession("intruder", RoleUser)
+	cookie := &http.Cookie{Name: sessionCookieName, Value: raw}
+	req := authReq("GET", "/api/chat/conversations/"+convo.ID, "", cookie, "")
+	rec := serve(t, s, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("non-owner GET = %d, want 404", rec.Code)
+	}
+}
+
+func TestHandleChatDelete_OwnershipEnforced(t *testing.T) {
+	s, adminCookie, adminCSRF := newAuthTestServer(t, "deladmin", "deladmin-long-password")
+	convo, _ := s.chat.CreateConversation("deladmin", "To Delete")
+
+	// Non-admin trying to delete admin's convo -> 404
+	if _, err := s.auth.createUser("intruder2", "intruder2-long-password", RoleUser, false); err != nil {
+		t.Fatalf("createUser: %v", err)
+	}
+	raw, sess, _ := s.auth.createSession("intruder2", RoleUser)
+	cookie := &http.Cookie{Name: sessionCookieName, Value: raw}
+	req := authReq("DELETE", "/api/chat/conversations/"+convo.ID, "", cookie, sess.CSRFToken)
+	rec := serve(t, s, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("non-owner DELETE = %d, want 404", rec.Code)
+	}
+
+	// Owner can delete
+	req = authReq("DELETE", "/api/chat/conversations/"+convo.ID, "", adminCookie, adminCSRF)
+	rec = serve(t, s, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owner DELETE = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleChatMessage_GuardClauses(t *testing.T) {
+	s := newTestServer(t, "")
+
+	// nil chat -> 503
+	s.chat = nil
+	req := loopbackReq("POST", "/api/chat/conversations/fake/message", strings.NewReader(`{"message":"hi"}`))
+	rec := serve(t, s, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil chat = %d, want 503", rec.Code)
+	}
+
+	// Restore chat but no API key -> 412
+	dir := t.TempDir()
+	chat, _ := NewChatManager(dir, nil)
+	s.chat = chat
+	req = loopbackReq("POST", "/api/chat/conversations/fake/message", strings.NewReader(`{"message":"hi"}`))
+	rec = serve(t, s, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("no API key = %d, want 412", rec.Code)
+	}
+
+	// With API key but bad convo ID -> 404
+	_ = chat.SetConfig("sk-test", "claude-sonnet-5", 4096)
+	req = loopbackReq("POST", "/api/chat/conversations/nonexistent/message", strings.NewReader(`{"message":"hi"}`))
+	rec = serve(t, s, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("bad convo = %d, want 404", rec.Code)
+	}
+
+	// Empty message -> 400
+	convo, _ := chat.CreateConversation("default", "Test")
+	req = loopbackReq("POST", "/api/chat/conversations/"+convo.ID+"/message", strings.NewReader(`{"message":""}`))
+	rec = serve(t, s, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty message = %d, want 400", rec.Code)
+	}
+
+	// Malformed JSON -> 400
+	req = loopbackReq("POST", "/api/chat/conversations/"+convo.ID+"/message", strings.NewReader(`{bad`))
+	rec = serve(t, s, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad JSON = %d, want 400", rec.Code)
+	}
+}
+
+func TestHandleChatMessage_OwnershipEnforced(t *testing.T) {
+	s, _, _ := newAuthTestServer(t, "msgadmin", "msgadmin-long-password")
+	_ = s.chat.SetConfig("sk-test", "claude-sonnet-5", 4096)
+	convo, _ := s.chat.CreateConversation("msgadmin", "Admin Only")
+
+	if _, err := s.auth.createUser("outsider", "outsider-long-password", RoleUser, false); err != nil {
+		t.Fatalf("createUser: %v", err)
+	}
+	raw, sess, _ := s.auth.createSession("outsider", RoleUser)
+	cookie := &http.Cookie{Name: sessionCookieName, Value: raw}
+	req := authReq("POST", "/api/chat/conversations/"+convo.ID+"/message", `{"message":"hi"}`, cookie, sess.CSRFToken)
+	rec := serve(t, s, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("non-owner message = %d, want 404", rec.Code)
+	}
+}

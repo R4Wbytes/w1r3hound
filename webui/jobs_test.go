@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 func containsLine(lines []string, want string) bool {
@@ -287,5 +289,75 @@ func TestLogRingBufferEviction(t *testing.T) {
 	}
 	if containsLine(log, "l-0") {
 		t.Fatalf("oldest line should have been evicted")
+	}
+}
+
+func TestWriteReportToDisk(t *testing.T) {
+	dir := t.TempDir()
+	result := &MCPScanResult{
+		Report: core.ReportData{
+			Target:    "example.com",
+			StartedAt: time.Now().UTC().Format(time.RFC3339),
+			Findings: []core.Finding{
+				{Module: "test", Title: "Test Finding", Severity: core.SevInfo},
+			},
+		},
+	}
+	if err := writeReportToDisk(dir, "test_scan", result); err != nil {
+		t.Fatalf("writeReportToDisk: %v", err)
+	}
+	jsonPath := filepath.Join(dir, "test_scan.json")
+	if _, err := os.Stat(jsonPath); err != nil {
+		t.Fatalf("JSON report not written: %v", err)
+	}
+	mdPath := filepath.Join(dir, "test_scan.md")
+	if _, err := os.Stat(mdPath); err != nil {
+		t.Fatalf("Markdown report not written: %v", err)
+	}
+	data, _ := os.ReadFile(jsonPath)
+	if !strings.Contains(string(data), "Test Finding") {
+		t.Fatalf("JSON report missing finding")
+	}
+}
+
+func TestWriteReportToDisk_BadDir(t *testing.T) {
+	result := &MCPScanResult{
+		Report: core.ReportData{Target: "x", Findings: []core.Finding{}},
+	}
+	err := writeReportToDisk("/nonexistent/path", "scan", result)
+	if err == nil {
+		t.Fatal("expected error for nonexistent directory")
+	}
+}
+
+func TestCountSeverities(t *testing.T) {
+	dir := t.TempDir()
+	jsonPath := filepath.Join(dir, "report.json")
+	data := `{"target":"example.com","findings":[
+		{"severity":"HIGH"},{"severity":"HIGH"},
+		{"severity":"MEDIUM"},{"severity":"INFO"}
+	]}`
+	if err := os.WriteFile(jsonPath, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	counts, total, err := countSeverities(jsonPath)
+	if err != nil {
+		t.Fatalf("countSeverities: %v", err)
+	}
+	if total != 4 {
+		t.Errorf("total = %d, want 4", total)
+	}
+	if counts["HIGH"] != 2 {
+		t.Errorf("HIGH = %d, want 2", counts["HIGH"])
+	}
+	if counts["MEDIUM"] != 1 {
+		t.Errorf("MEDIUM = %d, want 1", counts["MEDIUM"])
+	}
+}
+
+func TestCountSeverities_MissingFile(t *testing.T) {
+	_, _, err := countSeverities("/nonexistent/report.json")
+	if err == nil {
+		t.Fatal("expected error for missing file")
 	}
 }
