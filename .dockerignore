@@ -1,0 +1,38 @@
+# Keep the build context small and reproducible: only the source the build
+# stage actually needs. Everything below is either build output, local state,
+# runtime data, or dev-only test tooling.
+
+.git/
+.github/
+.claude/
+.hermes/
+
+# Compiled binaries (rebuilt inside the image)
+/w1r3hound
+/w1r3hound-linux
+/w1r3hound-mac
+/w1r3hound.exe
+webui/w1r3hound-webui
+
+# Scan output / runtime data
+w1r3hound_*.json
+w1r3hound_*.md
+webui/results/
+webui/wordlists/
+webui/auth/
+webui/chats/
+
+# Go test artifacts
+*.test
+*.out
+
+# Dev-only test tooling (not part of the Go build)
+webui/e2e/node_modules/
+
+# Docs, screenshots and large bundled wordlists (not needed to build the CLI)
+docs/screenshots/
+wordlists/
+
+# OS / editor cruft
+.DS_Store
+*.swp

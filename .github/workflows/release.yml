@@ -1,0 +1,40 @@
+name: Release
+
+# Cuts a release when a semver tag is pushed. Builds cross-platform static
+# binaries via GoReleaser, publishes checksums + a CycloneDX SBOM, and signs
+# the checksums file with keyless cosign (GitHub OIDC identity — no secrets).
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the GitHub Release and upload assets
+  id-token: write # keyless cosign signing via OIDC
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # GoReleaser needs full history + tags for the changelog
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+
+      # cosign for keyless signing of the checksums file.
+      - uses: sigstore/cosign-installer@v3
+
+      # syft for SBOM generation (GoReleaser's `sboms` shells out to it).
+      - uses: anchore/sbom-action/download-syft@v0
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

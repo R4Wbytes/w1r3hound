@@ -12,6 +12,9 @@ w1r3hound_*.md
 *.test
 *.out
 
+# GoReleaser build output
+/dist/
+
 # OS / editor cruft
 .DS_Store
 *.swp

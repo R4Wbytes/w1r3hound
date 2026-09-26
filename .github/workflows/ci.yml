@@ -26,6 +26,11 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2026.2.1
+          "$(go env GOPATH)/bin/staticcheck" ./...
+
       - name: gofmt (must be clean)
         run: |
           out=$(gofmt -l .)
@@ -55,8 +60,8 @@ jobs:
 
   vulncheck:
     runs-on: ubuntu-latest
-    # Informational: tracks Go stdlib advisories (see docs/SECURITY_ASSESSMENT.md).
-    continue-on-error: true
+    # Gate: fails the build on any known Go stdlib/module advisory. The toolchain
+    # is pinned in go.mod to keep this deterministic (see docs/SECURITY_ASSESSMENT.md).
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -65,7 +70,7 @@ jobs:
           check-latest: true
       - name: govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           "$(go env GOPATH)/bin/govulncheck" ./...
 
   juiceshop:
@@ -84,8 +89,8 @@ jobs:
 
   gosec:
     runs-on: ubuntu-latest
-    # Informational: triage against the audit's accepted G-items.
-    continue-on-error: true
+    # Gate: the tree is gosec-clean (accepted G-items carry inline #nosec
+    # justifications). A new unannotated finding fails the build.
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -94,5 +99,5 @@ jobs:
           check-latest: true
       - name: gosec
         run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
           "$(go env GOPATH)/bin/gosec" -quiet ./...

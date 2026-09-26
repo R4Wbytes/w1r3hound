@@ -4,9 +4,11 @@
 
 GO      ?= go
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -X main.version=$(VERSION)
+LDFLAGS := -s -w -X main.version=$(VERSION)
 CLI_BIN := w1r3hound
 GUI_BIN := webui/w1r3hound-webui
+# Reproducible, fully static builds: no cgo, stripped, no build-host paths.
+BUILDFLAGS := -trimpath
 
 .DEFAULT_GOAL := help
 
@@ -23,8 +25,11 @@ help:
 	@echo "  golden      FP/FN golden-snapshot check (golden-update to refresh)"
 	@echo "  fuzz        re-run the fuzz seed corpora"
 	@echo "  bench       micro-benchmarks for the hot paths (OPTIMIZATIONS.md)"
-	@echo "  vuln        govulncheck ./...   (informational; skipped if absent)"
-	@echo "  sec         gosec ./...         (informational; skipped if absent)"
+	@echo "  lint        staticcheck ./...   (skipped if absent)"
+	@echo "  vuln        govulncheck ./...   (skipped if absent)"
+	@echo "  sec         gosec ./...         (skipped if absent)"
+	@echo "  docker      build the static CLI container image"
+	@echo "  release-snapshot  local GoReleaser dry run (no publish)"
 	@echo "  smoke       build + contained loopback portscan of 127.0.0.1"
 	@echo "  mcp-smoke   build + MCP initialize handshake over stdio"
 	@echo "  e2e-juiceshop  Docker Juice Shop end-to-end (TEST_PLAN.md 4.2)"
@@ -34,8 +39,8 @@ help:
 
 .PHONY: build
 build:
-	$(GO) build -ldflags='$(LDFLAGS)' -o $(CLI_BIN) .
-	$(GO) build -o $(GUI_BIN) ./webui
+	CGO_ENABLED=0 $(GO) build $(BUILDFLAGS) -ldflags='$(LDFLAGS)' -o $(CLI_BIN) .
+	CGO_ENABLED=0 $(GO) build $(BUILDFLAGS) -ldflags='$(LDFLAGS)' -o $(GUI_BIN) ./webui
 
 .PHONY: vet
 vet:
@@ -66,12 +71,35 @@ test-race:
 csp:
 	$(GO) test -run TestStaticAssetsAreCSPClean ./webui/
 
+.PHONY: lint
+lint:
+	@if command -v staticcheck >/dev/null 2>&1; then \
+		staticcheck ./...; \
+	else \
+		echo "staticcheck not installed; skipping (go install honnef.co/go/tools/cmd/staticcheck@latest)"; \
+	fi
+
 .PHONY: vuln
 vuln:
 	@if command -v govulncheck >/dev/null 2>&1; then \
 		govulncheck ./...; \
 	else \
 		echo "govulncheck not installed; skipping (go install golang.org/x/vuln/cmd/govulncheck@latest)"; \
+	fi
+
+# Build the static, non-root CLI container image (see Dockerfile).
+.PHONY: docker
+docker:
+	docker build --build-arg VERSION=$(VERSION) -t w1r3hound:$(VERSION) -t w1r3hound:latest .
+
+# Local GoReleaser dry run: builds every target + archives + checksums into
+# ./dist without publishing or signing. Requires goreleaser on PATH.
+.PHONY: release-snapshot
+release-snapshot:
+	@if command -v goreleaser >/dev/null 2>&1; then \
+		goreleaser release --snapshot --clean --skip=sign,sbom; \
+	else \
+		echo "goreleaser not installed; skipping (https://goreleaser.com/install)"; \
 	fi
 
 .PHONY: sec

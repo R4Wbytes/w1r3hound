@@ -1,0 +1,101 @@
+# GoReleaser v2 — reproducible cross-platform release of the w1r3hound CLI.
+# Local dry run:   goreleaser release --snapshot --clean
+# Real release:    push a tag (vX.Y.Z); the release workflow runs this.
+#
+# Produces: static binaries for linux/darwin/windows on amd64/arm64, archives,
+# a SHA-256 checksums file, a CycloneDX SBOM per archive, and a keyless cosign
+# signature over the checksums file (identity is the GitHub Actions OIDC token).
+version: 2
+
+project_name: w1r3hound
+
+before:
+  hooks:
+    # Zero external deps, so this is effectively a no-op sanity check that the
+    # module graph is clean before building.
+    - go mod tidy
+
+builds:
+  - id: w1r3hound
+    main: .
+    binary: w1r3hound
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # windows/arm64 and darwin builds are all valid for a pure-Go static binary;
+    # no exclusions needed.
+    mod_timestamp: "{{ .CommitTimestamp }}" # reproducible build timestamps
+
+archives:
+  - id: w1r3hound
+    formats:
+      - tar.gz
+    # Windows users expect a zip.
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# CycloneDX SBOM for each archive (uses syft; installed in the release workflow).
+sboms:
+  - id: archive
+    artifacts: archive
+
+# Keyless cosign signature over the checksums file. Verifiable with:
+#   cosign verify-blob --certificate checksums.txt.pem \
+#     --signature checksums.txt.sig \
+#     --certificate-identity-regexp 'https://github.com/R4Wbytes/w1r3hound/.*' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     checksums.txt
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^style:"
+      - "^chore:"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  draft: false
+  prerelease: auto
+  # A tag like v2.1.0-rc.1 is auto-flagged as a pre-release by `prerelease: auto`.
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
