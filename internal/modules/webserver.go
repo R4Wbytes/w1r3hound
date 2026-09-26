@@ -351,13 +351,12 @@ func inspectTLS(hostAddr string, timeout time.Duration, skipVerify bool, cfg *co
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	// PERF: previously used tls.DialWithDialer with a fixed Timeout, so SIGINT
-	// couldn't interrupt an in-flight TLS handshake. Now the dialer's
-	// Cancel channel fires when the parent context is cancelled (for global
-	// SIGINT cancellation, callers should derive cfg.Context here; for now
-	// the per-request timeout still bounds the dial — this only fixes the
-	// ctx-propagation in the dialer, not the missing global cancel hook
-	// inside inspectTLS itself, which is called outside the loop).
+	// The handshake is rooted at the operator cancel context (cfg.Context,
+	// which fires on SIGINT/SIGTERM) with the per-request timeout layered on
+	// top, so Ctrl-C tears down an in-flight TLS dial immediately instead of
+	// waiting out the full timeout. tls.Dialer.DialContext propagates the
+	// context into both the TCP dial and the handshake (net.Dialer.Cancel,
+	// used before, is deprecated and could not carry a context).
 	var parentCtx context.Context
 	var parentCancel context.CancelFunc
 	if cfg != nil {
@@ -366,18 +365,23 @@ func inspectTLS(hostAddr string, timeout time.Duration, skipVerify bool, cfg *co
 		parentCtx, parentCancel = context.WithTimeout(context.Background(), timeout)
 	}
 	defer parentCancel()
-	conn, err := tls.DialWithDialer(
-		&net.Dialer{Timeout: timeout, Cancel: parentCtx.Done()},
-		"tcp",
-		hostAddr,
+	dialer := &tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: timeout},
 		// BUGFIX: previously hardcoded true. Now honours the caller's
 		// skipVerify flag (sourced from cfg.SkipSSLCheck). Lets users
 		// enforce strict validation when needed.
 		// #nosec G402 -- skipVerify is the operator-set cfg.SkipSSLCheck flag; inspecting a target's broken/self-signed cert is the point of this module, opt-in by the operator.
-		&tls.Config{InsecureSkipVerify: skipVerify},
-	)
+		Config: &tls.Config{InsecureSkipVerify: skipVerify},
+	}
+	rawConn, err := dialer.DialContext(parentCtx, "tcp", hostAddr)
 	if err != nil {
 		log.Debug("TLS connect failed: %v", err)
+		return nil
+	}
+	conn, ok := rawConn.(*tls.Conn)
+	if !ok {
+		_ = rawConn.Close()
+		log.Debug("TLS dial returned a non-TLS connection for %s", hostAddr)
 		return nil
 	}
 	defer conn.Close()

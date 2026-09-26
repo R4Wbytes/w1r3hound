@@ -385,8 +385,10 @@ func (m *Manager) Delete(id string) error {
 	m.mu.Unlock()
 
 	for _, ext := range []string{".json", ".md", ".log", ".meta.json"} {
-		// #nosec G703 -- id is gated by validScanID (single path component, no ".."), so the joined path stays inside resultsDir.
+		// id is gated by validScanID (single path component, no ".."), so the
+		// joined path stays inside resultsDir.
 		p := filepath.Join(m.resultsDir, id+ext)
+		// #nosec G304,G703 -- see above: id is validScanID-gated, path confined to resultsDir.
 		_ = os.Remove(p)
 	}
 	return nil
