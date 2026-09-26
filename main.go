@@ -29,7 +29,7 @@ import (
 	"github.com/R4Wbytes/w1r3hound/internal/report"
 )
 
-var version = "2.0.0"
+var version = "2.1.0"
 
 // knownModules is the set of internal module names mapProtocol can resolve
 // to (i.e. every RunXxx registered in main), plus "all". mapProtocol passes

@@ -5,10 +5,27 @@ follows [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) where
 applicable.
 
-## [Unreleased]
+## [2.1.0] — 2026-09-25
 
-Continuation audit (BUG-1 … BUG-3): concurrency-safety and crawler fixes,
-each landed with a regression test.
+First tagged release since 2.0.0. Adds AI Chat, the MCP server and bridge,
+workflow cards, unified CLI/GUI scan storage, a security-hardening pass, and
+the build/release toolchain (container image, GoReleaser). Continuation audit
+(BUG-1 … BUG-3): concurrency-safety and crawler fixes, each landed with a
+regression test.
+
+### Build & release
+
+- **Container image** (`Dockerfile`, `.dockerignore`): multi-stage build on
+  `distroless/static:nonroot` — a CGO-free static CLI binary, non-root, no
+  shell.
+- **GoReleaser pipeline** (`.goreleaser.yml`, `.github/workflows/release.yml`):
+  tag-triggered cross-compilation (linux/darwin/windows × amd64/arm64),
+  SHA-256 checksums, CycloneDX SBOM, and keyless cosign signing of the
+  checksums via GitHub OIDC.
+- **Reproducible builds**: `CGO_ENABLED=0 -trimpath -ldflags="-s -w"` in the
+  Makefile; new `lint`, `docker` and `release-snapshot` targets.
+- **CI SAST gates**: `staticcheck`, `govulncheck` and `gosec` now run as
+  blocking checks (pinned versions) instead of informational jobs.
 
 ### Added
 
@@ -52,6 +69,13 @@ each landed with a regression test.
 
 ### Fixed
 
+- **staticcheck SA1019** (`internal/modules/webserver.go`): `inspectTLS` no
+  longer uses the deprecated `net.Dialer.Cancel`; it dials via
+  `tls.Dialer.DialContext`, which also roots the TLS handshake at the operator
+  cancel context so SIGINT tears down an in-flight dial.
+- **gosec G703 suppression** (`webui/jobs.go`): moved the `#nosec` annotation
+  onto the `os.Remove` sink so gosec accepts the `validScanID`-gated path join;
+  the tree is now clean under gosec, staticcheck and govulncheck.
 - **MCP `prompts/get` nil-args panic** (`internal/mcp/tools.go`): sending
   `prompts/get` without an `arguments` field caused a nil map access that
   crashed the server. Added nil guard.

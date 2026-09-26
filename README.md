@@ -11,7 +11,7 @@
 
    [ wiretap-grade offensive recon ]
    ─────────────────────────────────────
-   w1r3hound v2.0.0 · OWASP WSTG · BBP · CTF
+   w1r3hound v2.1.0 · OWASP WSTG · BBP · CTF
 ```
 
 > *"Privacy is a lie. Security is an illusion. The only thing that's real is the data.
