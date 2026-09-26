@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Keep the SHA-pinned GitHub Actions current: Dependabot reads the `# vX.Y.Z`
+  # comment next to each pinned SHA and opens PRs that bump both together.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # The Go module has zero external dependencies, so this mainly tracks the
+  # Go directive/toolchain in go.mod.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
