@@ -256,6 +256,8 @@ func toolDefinitions() []map[string]any {
 					"crawl_pages":          map[string]any{"type": "integer", "description": "Max pages for the crawler (default 100)"},
 					"js_files":             map[string]any{"type": "integer", "description": "Max JavaScript files to analyse (default 50)"},
 					"min_severity":         map[string]any{"type": "string", "enum": []string{"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}, "description": "Minimum severity to include in results (default: all)"},
+					"proxy":                map[string]any{"type": "string", "description": "Route HTTP/HTTPS traffic through an upstream proxy (http://, https:// or socks5://), e.g. http://127.0.0.1:8080 (Burp/ZAP/mitmproxy). Raw TCP/UDP (port scan, AXFR, DNS) is not proxied."},
+					"proxy_cacert":         map[string]any{"type": "string", "description": "Path to a PEM CA bundle to trust (e.g. the proxy's exported CA) so TLS to trusted intel APIs still verifies through the proxy"},
 				},
 				"required": []string{"target"},
 			},
@@ -577,6 +579,8 @@ type scanParams struct {
 	CrawlPages         int               `json:"crawl_pages"`
 	JSFiles            int               `json:"js_files"`
 	MinSeverity        string            `json:"min_severity"`
+	Proxy              string            `json:"proxy"`
+	ProxyCACert        string            `json:"proxy_cacert"`
 }
 
 var severityOrder = map[string]int{
@@ -717,6 +721,13 @@ func executeScan(argsRaw json.RawMessage, tc *toolCall) toolResult {
 		}
 	}
 
+	// Validate proxy.
+	if p.Proxy != "" {
+		if _, err := core.ValidateProxy(p.Proxy); err != nil {
+			return scanErr(err.Error())
+		}
+	}
+
 	// Build Config.
 	cfg := core.DefaultConfig()
 	cfg.BlockPrivateEgress = !p.AllowPrivate
@@ -764,6 +775,12 @@ func executeScan(argsRaw json.RawMessage, tc *toolCall) toolResult {
 	}
 	if len(p.Resolvers) > 0 {
 		cfg.Resolvers = p.Resolvers
+	}
+	if p.Proxy != "" {
+		cfg.Proxy = p.Proxy
+	}
+	if p.ProxyCACert != "" {
+		cfg.ProxyCACert = p.ProxyCACert
 	}
 	if p.WaybackLimit > 0 && p.WaybackLimit <= 100000 {
 		cfg.WaybackLimit = p.WaybackLimit

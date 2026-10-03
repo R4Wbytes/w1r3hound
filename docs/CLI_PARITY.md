@@ -44,6 +44,8 @@ Source of truth:
 | **`-wayback-limit`** | `WaybackLimit` | **Yes (R14)** | wayback CDX cap (0..100000) |
 | **`-crawl-pages`** | `CrawlMaxPages` | **Yes (R14)** | crawler page cap (0..5000) |
 | **`-js-files`** | `MaxJSFiles` | **Yes (R14)** | JS analysis cap (0..2000) |
+| **`-proxy`** | `Proxy` | **Yes** | upstream proxy URL (http/https/socks5), validated by `core.ValidateProxy` and emitted as `-proxy <url>` |
+| `-proxy-cacert` | `ProxyCACert` | No (intentional) | PEM CA path; CLI/MCP only — see §5 |
 
 **All 10 options are now exposed** (Round 14; the "No" rows above were the gap
 before it landed — see the status banner). Two of them (`-skip-tls-verify`,
@@ -169,3 +171,10 @@ must be extended before the frontend can send these.
 - `-header` secrets (e.g. `Authorization`) are entered per-scan and not
   persisted; they are passed to the subprocess argv only. (Note: argv is
   visible in process listings on the host — call this out in the UI hint.)
+- `-proxy-cacert` is **CLI/MCP only** and intentionally not exposed in the web
+  GUI. It is an arbitrary local filesystem path (a CA bundle), which would need
+  the same `resolveWordlist`-style confinement as the other GUI path inputs; a
+  CA bundle does not belong under `webui/wordlists/`, so rather than contort the
+  confinement model it is left to the CLI/MCP, where arbitrary local paths are
+  already the norm. `-proxy` itself (the common Burp/ZAP case) *is* exposed in
+  the GUI, validated by the same `core.ValidateProxy` the CLI uses.

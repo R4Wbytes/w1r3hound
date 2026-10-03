@@ -79,6 +79,11 @@ w1r3hound -t target.com -w /path/to/subdomains.txt -o bb_report
   -resolver          Custom DNS resolver, e.g. 1.1.1.1 or 8.8.8.8:53 (default: system)
   -resolvers         Path to a resolver list — opts subdomain brute-force/permutation into the
                      raw-UDP DNS engine (rotates across resolvers, -rate governs DNS too)
+  -proxy             Route HTTP/HTTPS traffic through an upstream proxy
+                     (http://, https:// or socks5://), e.g. http://127.0.0.1:8080
+                     for Burp Suite / ZAP / mitmproxy
+  -proxy-cacert      PEM CA bundle to trust (e.g. the proxy's exported CA) so TLS
+                     to the OSINT/intel APIs still verifies through -proxy
   -H, -header        Custom HTTP header in 'Name: value' format (repeatable)
   -skip-tls-verify   Skip TLS certificate verification (default: true)
   -block-private-egress  Refuse dials to loopback/private/link-local IPs — opt-in SSRF guard (default: false)
@@ -92,6 +97,38 @@ w1r3hound -t target.com -w /path/to/subdomains.txt -o bb_report
   -ua                Custom User-Agent
   -mcp               Start as a Model Context Protocol (JSON-RPC 2.0 / stdio) server for AI agents
 ```
+
+### Proxy / intercepting with Burp Suite
+
+Route every HTTP/HTTPS request the engine makes through an intercepting proxy so
+you can observe, replay, and tamper with the recon traffic in Burp Suite, OWASP
+ZAP, or mitmproxy:
+
+```bash
+# Send all HTTP(S) traffic through Burp's default listener
+w1r3hound -t example.com -proxy http://127.0.0.1:8080
+
+# SOCKS5 works too (handled natively — still zero dependencies)
+w1r3hound -t example.com -proxy socks5://127.0.0.1:1080
+
+# Trust Burp's CA so the verified OSINT/intel API calls (crt.sh, Wayback, RDAP…)
+# still validate TLS through the proxy instead of failing on Burp's MITM cert
+w1r3hound -t example.com -proxy http://127.0.0.1:8080 -proxy-cacert ~/burp-ca.pem
+```
+
+Notes:
+
+- Traffic to the **target** already skips TLS verification by default
+  (`-skip-tls-verify`), so it flows through Burp's MITM cert without extra setup.
+  The verified **intel-API** clients do not — pass `-proxy-cacert` (Burp →
+  *Proxy → Options → Import / export CA certificate → Certificate in DER/PEM*) or
+  trust the proxy CA system-wide, otherwise those calls fail through the proxy.
+- Only **HTTP/HTTPS** is proxied. The raw TCP/UDP paths — port scan, real AXFR
+  zone transfer, and the raw-UDP DNS brute-force engine — are **not** sent
+  through the proxy, because an HTTP proxy cannot carry them.
+- With `-block-private-egress` on, the proxy's own endpoint is exempted so a
+  loopback proxy still works; SSRF scoping for the ultimate target is then the
+  proxy's responsibility.
 
 ## Scan Protocols
 
@@ -235,7 +272,7 @@ go build -o webui/w1r3hound-webui ./webui
   `-rate`, `-timeout`, `-ua`, `-o`, `-passive`, `-v`) plus an **Advanced
   options** section at full CLI parity (`-dir-wordlist`, `-dir-ext`, `-H`
   custom headers, `-skip-tls-verify`, `-block-private-egress`, `-resolver`,
-  `-resolvers`, `-wayback-limit`, `-crawl-pages`, `-js-files`), with passive
+  `-resolvers`, `-proxy`, `-wayback-limit`, `-crawl-pages`, `-js-files`), with passive
   mode on by default and a mandatory authorization checkbox. Engine output
   streams line by line over SSE with severity coloring; running scans are
   cancellable and each scan gets a tab.
@@ -432,6 +469,8 @@ Pass `allow_private=true` in the scan arguments to override.
 - The crawler doesn't preserve query parameters from `<a href>` links.
 - No deduplication across multiple `w1r3hound` runs against the same target
   (each run produces its own `w1r3hound_target_timestamp.{json,md}` pair).
+- `-proxy` only routes HTTP/HTTPS traffic; the raw TCP/UDP paths (port scan,
+  AXFR zone transfer, raw-UDP DNS engine) are not proxied.
 
 ## Legal
 

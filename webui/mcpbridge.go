@@ -61,6 +61,7 @@ type MCPScanParams struct {
 	CrawlPages         int               `json:"crawl_pages,omitempty"`
 	JSFiles            int               `json:"js_files,omitempty"`
 	MinSeverity        string            `json:"min_severity,omitempty"`
+	Proxy              string            `json:"proxy,omitempty"`
 }
 
 // MCPBridge holds a persistent in-process connection to the MCP server via

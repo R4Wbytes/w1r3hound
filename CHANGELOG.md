@@ -5,6 +5,26 @@ follows [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) where
 applicable.
 
+## [Unreleased]
+
+### Added
+
+- **Upstream proxy support** (`-proxy`, Burp Suite / OWASP ZAP / mitmproxy
+  style): routes all HTTP/HTTPS traffic from the engine's shared clients through
+  an `http://`, `https://` or `socks5://` proxy, e.g. `-proxy http://127.0.0.1:8080`.
+  SOCKS5 is handled by `net/http` natively, so the zero-dependency guarantee
+  holds. Companion `-proxy-cacert` loads a PEM CA bundle (e.g. the interception
+  proxy's exported certificate) so the verified intel-API clients still validate
+  TLS through the proxy. Only HTTP(S) traffic is proxied — the raw TCP/UDP paths
+  (port scan, AXFR, raw-UDP DNS engine) are not, since an HTTP proxy cannot carry
+  them. Exposed on all three surfaces: the CLI flags, the MCP `scan` tool
+  (`proxy` / `proxy_cacert` arguments), and the web console's New Scan → Advanced
+  options (`-proxy`). When `-block-private-egress` is on, the proxy's own
+  endpoint is exempted so a loopback interception proxy still works (the SSRF
+  guard otherwise blocks it); scoping for the ultimate target is then delegated
+  to the proxy. (`internal/core/core.go`, `main.go`, `internal/mcp/tools.go`,
+  `webui/validate.go`, `webui/static/js/app.js`)
+
 ## [2.1.0] — 2026-09-25
 
 First tagged release since 2.0.0. Adds AI Chat, the MCP server and bridge,

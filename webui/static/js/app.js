@@ -735,6 +735,8 @@ document.addEventListener("DOMContentLoaded", () => {
             <div class="form-group"><label>Resolver list <code>-resolvers</code></label><input type="text" id="scan-resolvers" class="form-input mono" placeholder="empty = system / -resolver">
               <div class="field-hint">Must live inside <code>webui/wordlists/</code></div></div>
           </div>
+          <div class="form-group"><label>Upstream proxy <code>-proxy</code></label><input type="text" id="scan-proxy" class="form-input mono" placeholder="http://127.0.0.1:8080 — Burp / ZAP / mitmproxy (http/https/socks5)">
+            <div class="field-hint">Routes HTTP/HTTPS traffic through the proxy. Raw TCP/UDP (port scan, AXFR, DNS) is not proxied.</div></div>
           <div class="form-grid-3">
             <div class="form-group"><label>Wayback cap <code>-wayback-limit</code></label><input type="number" id="scan-wayback" class="form-input" min="0" max="100000" placeholder="5000"></div>
             <div class="form-group"><label>Crawl pages <code>-crawl-pages</code></label><input type="number" id="scan-crawl" class="form-input" min="0" max="5000" placeholder="100"></div>
@@ -875,6 +877,7 @@ document.addEventListener("DOMContentLoaded", () => {
       wayback_limit: parseInt($("#scan-wayback").value, 10) || 0,
       crawl_pages: parseInt($("#scan-crawl").value, 10) || 0,
       js_files: parseInt($("#scan-js").value, 10) || 0,
+      proxy: ($("#scan-proxy").value || "").trim(),
     });
     // Only send skip_tls_verify when the operator opts into verification; a
     // missing field means "use the CLI default" (skip). See docs/CLI_PARITY.md.

@@ -235,6 +235,8 @@ func main() {
 	flag.IntVar(&cfg.WaybackLimit, "wayback-limit", cfg.WaybackLimit, "Max URLs to pull from the Wayback CDX API")
 	flag.IntVar(&cfg.CrawlMaxPages, "crawl-pages", cfg.CrawlMaxPages, "Max pages for the crawler")
 	flag.IntVar(&cfg.MaxJSFiles, "js-files", cfg.MaxJSFiles, "Max JavaScript files to analyse")
+	proxyFlag := flag.String("proxy", "", "Route HTTP/HTTPS traffic through an upstream proxy (http://, https:// or socks5://), e.g. http://127.0.0.1:8080 for Burp Suite / ZAP / mitmproxy")
+	flag.StringVar(&cfg.ProxyCACert, "proxy-cacert", "", "PEM CA bundle to trust in addition to the system roots (e.g. the proxy's exported CA) so intel-API TLS still verifies through -proxy")
 
 	moduleList := flag.String("protocols", "all", "Comma-separated protocols: recon,traceroute,passivewatch,fingerprinter,archaeology,diversify,heartbeat,probescan,metadata,sentry,deepdive,portscan,corstrace,cloudsniff,bruteforce,apiscan,saasenum,crawler,jsdeep,endprobe,takeover")
 	flag.StringVar(moduleList, "m", "all", "Protocols (shorthand)")
@@ -305,6 +307,21 @@ func main() {
 		cfg.Modules = append(cfg.Modules, mapped)
 	}
 
+	// Validate and apply the upstream proxy BEFORE scheme detection, so the
+	// HEAD probe in detectScheme is already routed through the proxy too.
+	if *proxyFlag != "" {
+		if _, err := core.ValidateProxy(*proxyFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "\n%v\n", err)
+			os.Exit(1)
+		}
+		cfg.Proxy = *proxyFlag
+	}
+	if cfg.ProxyCACert != "" {
+		if _, err := os.Stat(cfg.ProxyCACert); err != nil {
+			fmt.Fprintf(os.Stderr, "\033[33m  ⚠ -proxy-cacert %q is not readable (%v) — proceeding without it\033[0m\n", cfg.ProxyCACert, err)
+		}
+	}
+
 	cfg.Target = detectScheme(cfg.Target, cfg)
 
 	cfg.Domain = extractDomain(cfg.Target)
@@ -330,6 +347,9 @@ func main() {
 	log.Info("Protocols:   %s", strings.Join(cfg.Modules, ", "))
 	log.Info("Threads:     %d", cfg.Concurrency)
 	log.Info("Mode:        %s", modeLabel(cfg.Passive))
+	if cfg.Proxy != "" {
+		log.Info("Proxy:       %s", cfg.Proxy)
+	}
 	if name, identifier := configuredResearchIdentifier(cfg.RequestHeaders); identifier != "" {
 		log.Info("Research ID: %s: %s", name, identifier)
 	} else if len(cfg.RequestHeaders) > 0 {

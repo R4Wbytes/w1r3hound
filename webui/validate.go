@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/R4Wbytes/w1r3hound/internal/core"
 )
 
 // ModuleInfo describes one w1r3hound recon module for the UI catalog.
@@ -92,6 +94,7 @@ type ScanRequest struct {
 	WaybackLimit       int      `json:"wayback_limit"`        // -wayback-limit, 0 = engine default
 	CrawlPages         int      `json:"crawl_pages"`          // -crawl-pages, 0 = engine default
 	JSFiles            int      `json:"js_files"`             // -js-files, 0 = engine default
+	Proxy              string   `json:"proxy"`                // -proxy, upstream proxy URL (http/https/socks5)
 }
 
 var (
@@ -382,6 +385,11 @@ func buildArgs(req *ScanRequest, wordlistsDir, resultsDir string) ([]string, str
 	if req.JSFiles < 0 || req.JSFiles > 2000 {
 		return nil, "", fmt.Errorf("js-files out of range (0-2000)")
 	}
+	if req.Proxy != "" {
+		if _, err := core.ValidateProxy(req.Proxy); err != nil {
+			return nil, "", fmt.Errorf("invalid proxy: %w", err)
+		}
+	}
 
 	base := req.Output
 	if base != "" {
@@ -460,6 +468,9 @@ func buildArgs(req *ScanRequest, wordlistsDir, resultsDir string) ([]string, str
 	if req.JSFiles > 0 {
 		args = append(args, "-js-files", fmt.Sprintf("%d", req.JSFiles))
 	}
+	if req.Proxy != "" {
+		args = append(args, "-proxy", req.Proxy)
+	}
 	args = append(args, "-o", filepath.Join(resultsDir, base))
 	return args, base, nil
 }
@@ -526,6 +537,11 @@ func buildMCPParams(req *ScanRequest, wordlistsDir, resultsDir string) (MCPScanP
 	if req.JSFiles < 0 || req.JSFiles > 2000 {
 		return MCPScanParams{}, "", fmt.Errorf("js-files out of range (0-2000)")
 	}
+	if req.Proxy != "" {
+		if _, err := core.ValidateProxy(req.Proxy); err != nil {
+			return MCPScanParams{}, "", fmt.Errorf("invalid proxy: %w", err)
+		}
+	}
 
 	base := req.Output
 	if base != "" {
@@ -581,6 +597,7 @@ func buildMCPParams(req *ScanRequest, wordlistsDir, resultsDir string) (MCPScanP
 		WaybackLimit:   req.WaybackLimit,
 		CrawlPages:     req.CrawlPages,
 		JSFiles:        req.JSFiles,
+		Proxy:          req.Proxy,
 	}
 
 	return params, base, nil

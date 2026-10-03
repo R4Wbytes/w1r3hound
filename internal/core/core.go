@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -46,9 +47,21 @@ type Config struct {
 	// a target-supplied URL, pointing at an internal/metadata address. Off by
 	// default so intended internal/CTF scans keep working.
 	BlockPrivateEgress bool
-	Passive            bool              // passive-only mode (no active probing)
-	RL                 *RateLimiter      // rate limiter shared across modules
-	RequestHeaders     map[string]string // headers added to every HTTP request
+	// Proxy, when set, routes every request from the shared HTTP clients through
+	// an upstream proxy — an http://, https:// or socks5:// URL, e.g. Burp Suite /
+	// OWASP ZAP / mitmproxy at http://127.0.0.1:8080. Only HTTP(S) traffic is
+	// affected; the raw TCP/UDP paths (port scan, AXFR, raw-UDP DNS engine) are
+	// not proxied, since an intercepting HTTP proxy cannot carry them. (-proxy)
+	Proxy string
+	// ProxyCACert is an optional path to a PEM CA bundle trusted in ADDITION to
+	// the system roots — typically the interception proxy's exported CA — so the
+	// verified intel-API clients still validate TLS when their traffic is MITMed
+	// by the proxy. Unused by the target client when -skip-tls-verify is on
+	// (verification is already skipped there). (-proxy-cacert)
+	ProxyCACert    string
+	Passive        bool              // passive-only mode (no active probing)
+	RL             *RateLimiter      // rate limiter shared across modules
+	RequestHeaders map[string]string // headers added to every HTTP request
 
 	// Cancel is the root context cancellation function. Modules that perform
 	// raw net.Dial/tls.Dial (outside the shared HTTP client) should derive a
@@ -268,6 +281,14 @@ func newHTTPClient(cfg *Config, insecureSkipVerify bool) *http.Client {
 	if !insecureSkipVerify {
 		tlsConf.MinVersion = tls.VersionTLS12
 	}
+	// Trust the interception proxy's CA (if provided) in addition to the system
+	// roots so the verified intel-API clients still validate TLS when their
+	// traffic is routed through a MITM proxy (-proxy-cacert).
+	if cfg != nil && cfg.ProxyCACert != "" {
+		if pool := proxyCACertPool(cfg.ProxyCACert); pool != nil {
+			tlsConf.RootCAs = pool
+		}
+	}
 	transport := &http.Transport{
 		TLSClientConfig: tlsConf,
 		// A hand-built Transport doesn't inherit http.DefaultTransport's h2
@@ -283,6 +304,13 @@ func newHTTPClient(cfg *Config, insecureSkipVerify bool) *http.Client {
 		MaxIdleConnsPerHost: cfg.Concurrency,
 		IdleConnTimeout:     90 * time.Second,
 		DisableKeepAlives:   false,
+	}
+	// Route all HTTP/HTTPS traffic through the configured upstream proxy (Burp /
+	// ZAP / mitmproxy). http.ProxyURL applies unconditionally, so every module's
+	// requests are visible to the proxy. socks5:// is handled by net/http's own
+	// SOCKS support, so no third-party dependency is pulled in.
+	if proxyURL := cfg.parsedProxyURL(); proxyURL != nil {
+		transport.Proxy = http.ProxyURL(proxyURL)
 	}
 	var roundTripper http.RoundTripper = transport
 	if len(cfg.RequestHeaders) > 0 {
@@ -339,7 +367,25 @@ func egressControl(cfg *Config) func(network, address string, c syscall.RawConn)
 	if cfg == nil || !cfg.BlockPrivateEgress {
 		return nil
 	}
+	// When an upstream proxy is configured the socket dial targets the proxy
+	// itself (the real target is reached through it), so exempt the proxy's own
+	// endpoint — otherwise a loopback interception proxy (Burp at 127.0.0.1:8080)
+	// would be blocked by this guard, which matters especially in MCP mode where
+	// the guard is on by default. Only the exact host:port is exempted, so the
+	// rest of a loopback/private range stays blocked; SSRF scoping for the
+	// ultimate target is then delegated to the proxy.
+	var proxyEndpoint string
+	if pu := cfg.parsedProxyURL(); pu != nil {
+		port := pu.Port()
+		if port == "" {
+			port = defaultProxyPort(pu.Scheme)
+		}
+		proxyEndpoint = net.JoinHostPort(pu.Hostname(), port)
+	}
 	return func(_, address string, _ syscall.RawConn) error {
+		if proxyEndpoint != "" && sameDialEndpoint(address, proxyEndpoint) {
+			return nil
+		}
 		host, _, err := net.SplitHostPort(address)
 		if err != nil {
 			host = address
@@ -351,6 +397,88 @@ func egressControl(cfg *Config) func(network, address string, c syscall.RawConn)
 		}
 		return nil
 	}
+}
+
+// parsedProxyURL returns the validated upstream proxy URL, or nil when none is
+// configured or the value does not parse. Validation errors are surfaced to the
+// operator at startup (see ValidateProxy); here we fail safe to "no proxy".
+func (c *Config) parsedProxyURL() *url.URL {
+	if c == nil || c.Proxy == "" {
+		return nil
+	}
+	u, err := ValidateProxy(c.Proxy)
+	if err != nil {
+		return nil
+	}
+	return u
+}
+
+// ValidateProxy parses and validates an upstream proxy URL. It accepts the
+// http, https, socks5 and socks5h schemes with a host (and optional port);
+// anything else is rejected with an explanatory error. net/http routes both
+// HTTP and SOCKS5 proxies natively, so no third-party dependency is needed.
+func ValidateProxy(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy URL %q: %w", raw, err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "socks5", "socks5h":
+	default:
+		return nil, fmt.Errorf("unsupported proxy scheme %q — use http://, https:// or socks5://", u.Scheme)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("proxy URL must include a host, e.g. http://127.0.0.1:8080")
+	}
+	return u, nil
+}
+
+// proxyCACertPool loads a PEM CA bundle and returns a cert pool containing the
+// system roots plus that bundle, or nil if the file cannot be read or parsed.
+func proxyCACertPool(path string) *x509.CertPool {
+	// #nosec G304 -- path is an operator-supplied CA bundle passed on the CLI (-proxy-cacert); opening the file the operator explicitly points at is the intended behaviour of the tool they run.
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil
+	}
+	return pool
+}
+
+// defaultProxyPort returns the implicit port for a proxy scheme when the proxy
+// URL omits one, so the exempted endpoint matches the address net/http actually
+// dials.
+func defaultProxyPort(scheme string) string {
+	switch strings.ToLower(scheme) {
+	case "https":
+		return "443"
+	case "socks5", "socks5h":
+		return "1080"
+	default: // http
+		return "80"
+	}
+}
+
+// sameDialEndpoint reports whether a dialed "host:port" address is exactly the
+// configured proxy endpoint — host (IPv6 brackets stripped, case-insensitive)
+// AND port must match, so only the proxy itself is exempted from the egress
+// guard, never the rest of its host's port range.
+func sameDialEndpoint(dialAddress, proxyEndpoint string) bool {
+	dh, dp, err := net.SplitHostPort(dialAddress)
+	if err != nil {
+		return false
+	}
+	ph, pp, err := net.SplitHostPort(proxyEndpoint)
+	if err != nil {
+		return false
+	}
+	return dp == pp && strings.EqualFold(strings.Trim(dh, "[]"), strings.Trim(ph, "[]"))
 }
 
 // configuredTargetScope returns the exact host and optional path prefix supplied
